@@ -129,8 +129,6 @@ Backend:
   - All tests are in `tests/unit/test_*.py`
   - To test new code, run `poetry run pytest tests/unit/test_xxx.py` where `xxx` is the appropriate file for the current functionality
   - Write all tests with pytest
-  - Enterprise unit tests live under `enterprise/tests`; run them with `PYTHONPATH=enterprise poetry run pytest enterprise/tests/unit/test_xxx.py`
-
 
 Frontend:
 - Located in the `frontend` directory
@@ -181,9 +179,6 @@ The `enterprise/` directory contains additional functionality that extends the o
 - Integration services (GitHub, GitLab, Jira, Linear, Slack)
 - Billing and subscription management (Stripe)
 - Telemetry and analytics (PostHog, custom metrics framework)
-- Email services: Resend remains in `enterprise/server/services/email_service.py`; SMTPEmailService lives in
-  `enterprise/server/services/smtp_email_service.py` and is used for org invitations/budget alerts plus
-  the SMTP-driven UI email-enabled checks (SMTP_HOST).
 
 ### Enterprise Development Setup
 
