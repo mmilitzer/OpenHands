@@ -28,7 +28,27 @@ RUN apt-get update -y \
 
 COPY pyproject.toml poetry.lock ./
 RUN touch README.md
-RUN export POETRY_CACHE_DIR && poetry install --no-root && rm -rf $POETRY_CACHE_DIR
+
+RUN python3 - <<'PY'
+from pathlib import Path
+import poetry.core.version.markers as markers
+
+p = Path(markers.__file__)
+s = p.read_text()
+
+old = "constraint = self._parser(environment[self._name])"
+new = """value = environment[self._name]
+        if self._name == "platform_release":
+            value = "0"
+        constraint = self._parser(value)"""
+
+if old not in s:
+    raise SystemExit(f"Could not find target line in {p}")
+
+p.write_text(s.replace(old, new))
+print(f"Patched platform_release handling in {p}")
+PY
+RUN export POETRY_CACHE_DIR && python3 -m poetry install --no-root && rm -rf $POETRY_CACHE_DIR
 
 FROM base AS openhands-app
 
