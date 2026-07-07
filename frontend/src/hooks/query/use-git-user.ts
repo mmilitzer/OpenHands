@@ -3,7 +3,7 @@ import React from "react";
 import { usePostHog } from "posthog-js/react";
 import { useConfig } from "./use-config";
 import UserService from "#/api/user-service/user-service.api";
-import { useShouldShowUserFeatures } from "#/hooks/use-should-show-user-features";
+import { useShouldShowGitFeatures } from "#/hooks/use-should-show-git-features";
 import { useLogout } from "../mutation/use-logout";
 
 export const useGitUser = () => {
@@ -11,8 +11,9 @@ export const useGitUser = () => {
   const { data: config } = useConfig();
   const logout = useLogout();
 
-  // Use the shared hook to determine if we should fetch user data
-  const shouldFetchUser = useShouldShowUserFeatures();
+  // Use the Git-specific hook to determine if we should fetch user data.
+  // This requires a Git provider to be configured, not just authentication.
+  const shouldFetchUser = useShouldShowGitFeatures();
 
   const user = useQuery({
     queryKey: ["user"],
@@ -35,13 +36,14 @@ export const useGitUser = () => {
     }
   }, [user.data]);
 
-  // If we get a 401 here, it means that the integration tokens need to be
+  // In saas mode, a 401 means that the integration tokens need to be
   // refreshed. Since this happens at login, we log out.
+  // In oss mode, skip auto-logout since there's no token refresh mechanism
   React.useEffect(() => {
-    if (user?.error?.response?.status === 401) {
+    if (user?.error?.response?.status === 401 && config?.app_mode === "saas") {
       logout.mutate();
     }
-  }, [user.status]);
+  }, [user.status, config?.app_mode]);
 
   return user;
 };

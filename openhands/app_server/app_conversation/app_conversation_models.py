@@ -3,19 +3,54 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr, computed_field
 
-from openhands.agent_server.models import OpenHandsModel, SendMessageRequest
+from openhands.agent_server.models import (
+    ImageContent,
+    OpenHandsModel,
+    SendMessageRequest,
+    TextContent,
+)
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.app_server.event_callback.event_callback_models import (
     EventCallbackProcessor,
 )
+from openhands.app_server.integrations.service_types import ProviderType, SuggestedTask
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
-from openhands.integrations.service_types import ProviderType, SuggestedTask
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+
+# Import from new location and re-export for backward compatibility
+from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
+from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.llm import MetricsSnapshot
 from openhands.sdk.plugin import PluginSource
-from openhands.storage.data_models.conversation_metadata import ConversationTrigger
+
+__all__ = ['SandboxGroupingStrategy']
+
+# Canonical conversation-tag key under which the active ACP provider key
+# ('claude-code', 'codex', 'gemini-cli') is stored. Synced with agent-canvas.
+# Constrained to ^[a-z0-9]+$ by the SDK validator — no underscores allowed.
+# The typed ``AppConversationInfo.acp_server`` field is a projection of this tag.
+ACP_SERVER_TAG_KEY = 'acpserver'
+
+# Conversation-tag key pinning the resolved (grouped) workspace path at creation
+# so the delete-time archive captures the right directory without re-deriving it
+# from settings that may have changed. Must satisfy the SDK ^[a-z0-9]+$ tag-key
+# rule — no underscores.
+ARCHIVE_WORKSPACE_PATH_TAG_KEY = 'archiveworkspacepath'
+
+
+class ConversationTrigger(Enum):
+    RESOLVER = 'resolver'
+    GUI = 'gui'
+    SUGGESTED_TASK = 'suggested_task'
+    REMOTE_API_KEY = 'openhands_api'
+    SLACK = 'slack'
+    MICROAGENT_MANAGEMENT = 'microagent_management'
+    JIRA = 'jira'
+    JIRA_DC = 'jira_dc'
+    LINEAR = 'linear'
+    BITBUCKET = 'bitbucket'
+    AUTOMATION = 'automation'
 
 
 class AgentType(Enum):
@@ -79,6 +114,7 @@ class AppConversationInfo(BaseModel):
     trigger: ConversationTrigger | None = None
     pr_number: list[int] = Field(default_factory=list)
     llm_model: str | None = None
+    agent_kind: str = 'openhands'
 
     metrics: MetricsSnapshot | None = None
 
@@ -87,8 +123,27 @@ class AppConversationInfo(BaseModel):
 
     public: bool | None = None
 
+    # Tags for conversation metadata (e.g., automation context, skills used)
+    tags: dict[str, str] = Field(default_factory=dict)
+
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def acp_server(self) -> str | None:
+        """Active ACP provider key ('claude-code', 'codex', 'gemini-cli'), else None.
+
+        A typed projection of the ``acpserver`` tag (same as agent-canvas) so
+        the conversation UI can resolve a provider brand label without a dedicated
+        column. Riding the tag keeps a single source of truth that
+        round-trips through the DB ``tags`` column for free. Gated on
+        ``agent_kind`` so a stray tag never reports a provider for an OpenHands
+        conversation.
+        """
+        if self.agent_kind != 'acp':
+            return None
+        return self.tags.get(ACP_SERVER_TAG_KEY)
 
 
 class AppConversationSortOrder(Enum):
@@ -168,6 +223,18 @@ class AppConversationStartRequest(OpenHandsModel):
         ),
     )
 
+    # Secrets passed directly via API at conversation start time
+    secrets: dict[str, SecretStr] | None = Field(
+        default=None,
+        description=(
+            'Secrets to pass to the conversation. These are merged with any '
+            'existing secrets (from database or git providers), with API-provided '
+            'secrets taking precedence (overriding any existing secret with the same name). '
+            'Keys are secret names (e.g., "MY_API_KEY"), values are the secret values. '
+            'Warning: Providing a secret that already exists will silently override it.'
+        ),
+    )
+
 
 class AppConversationUpdateRequest(BaseModel):
     """Request model for updating conversation metadata.
@@ -175,6 +242,7 @@ class AppConversationUpdateRequest(BaseModel):
     All fields are optional - only provided fields will be updated.
     """
 
+    title: str | None = None
     public: bool | None = None
     selected_repository: str | None = None
     selected_branch: str | None = None
@@ -238,3 +306,89 @@ class SkillResponse(BaseModel):
     type: Literal['repo', 'knowledge', 'agentskills']
     content: str
     triggers: list[str] = []
+
+
+class HookDefinitionResponse(BaseModel):
+    """Response model for a single hook definition."""
+
+    type: str  # 'command' or 'prompt'
+    command: str
+    timeout: int = 60
+    async_: bool = Field(default=False, serialization_alias='async')
+
+
+class HookMatcherResponse(BaseModel):
+    """Response model for a hook matcher."""
+
+    matcher: str  # Pattern: '*', exact match, or regex
+    hooks: list[HookDefinitionResponse] = []
+
+
+class HookEventResponse(BaseModel):
+    """Response model for hooks of a specific event type."""
+
+    event_type: str  # e.g., 'stop', 'pre_tool_use', 'post_tool_use'
+    matchers: list[HookMatcherResponse] = []
+
+
+class GetHooksResponse(BaseModel):
+    """Response model for hooks endpoint."""
+
+    hooks: list[HookEventResponse] = []
+
+
+class AppSendMessageRequest(BaseModel):
+    """Request to send a follow-up message to a conversation.
+
+    This is used to send messages to an existing conversation via REST API,
+    as an alternative to WebSocket communication.
+    """
+
+    role: Literal['user'] = Field(
+        default='user',
+        description='The role of the message sender. Currently only "user" is supported.',
+    )
+    content: list[TextContent | ImageContent] = Field(
+        ...,
+        min_length=1,
+        description='The message content as a list of text and/or image content blocks.',
+    )
+    run: bool = Field(
+        default=True,
+        description='Whether to automatically run the agent after sending the message.',
+    )
+
+
+class SwitchProfileRequest(BaseModel):
+    """Request to switch a running conversation's LLM to a saved profile."""
+
+    profile_name: str = Field(
+        ...,
+        description='Name of a profile previously saved via /api/v1/settings/profiles.',
+        min_length=1,
+    )
+
+
+class SwitchAcpModelRequest(BaseModel):
+    """Request to switch a running ACP conversation's model in place."""
+
+    model: str = Field(
+        ...,
+        description='Model identifier to switch to (must be supported by the provider).',
+        min_length=1,
+    )
+
+
+class AppSendMessageResponse(BaseModel):
+    """Response from sending a message to a conversation."""
+
+    success: bool = Field(
+        description='Whether the message was successfully sent to the agent.',
+    )
+    sandbox_status: SandboxStatus = Field(
+        description='The current status of the sandbox after the operation.',
+    )
+    message: str | None = Field(
+        default=None,
+        description='Optional message with additional details (e.g., if sandbox was resumed).',
+    )

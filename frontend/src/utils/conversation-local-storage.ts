@@ -23,6 +23,7 @@ export interface ConversationState {
   unpinnedTabs: string[];
   conversationMode: ConversationMode;
   subConversationTaskId: string | null;
+  draftMessage: string | null;
 }
 
 const DEFAULT_CONVERSATION_STATE: ConversationState = {
@@ -31,7 +32,38 @@ const DEFAULT_CONVERSATION_STATE: ConversationState = {
   unpinnedTabs: [],
   conversationMode: "code",
   subConversationTaskId: null,
+  draftMessage: null,
 };
+
+const REMOVED_CONVERSATION_TABS: ReadonlySet<string> = new Set([
+  "served",
+  "app",
+]);
+
+function sanitizeStoredState(
+  stored: Partial<ConversationState>,
+): Partial<ConversationState> {
+  let result: Partial<ConversationState> = stored;
+
+  if (
+    typeof result.selectedTab === "string" &&
+    REMOVED_CONVERSATION_TABS.has(result.selectedTab)
+  ) {
+    result = { ...result };
+    delete result.selectedTab;
+  }
+
+  if (result.unpinnedTabs) {
+    const filtered = result.unpinnedTabs.filter(
+      (tab) => !REMOVED_CONVERSATION_TABS.has(tab),
+    );
+    if (filtered.length !== result.unpinnedTabs.length) {
+      result = { ...result, unpinnedTabs: filtered };
+    }
+  }
+
+  return result;
+}
 
 /**
  * Check if a conversation ID is a temporary task ID that should not be persisted.
@@ -54,7 +86,10 @@ export function getConversationState(
     const key = `${LOCAL_STORAGE_KEYS.CONVERSATION_STATE}-${conversationId}`;
     const item = localStorage.getItem(key);
     if (item !== null) {
-      return { ...DEFAULT_CONVERSATION_STATE, ...JSON.parse(item) };
+      return {
+        ...DEFAULT_CONVERSATION_STATE,
+        ...sanitizeStoredState(JSON.parse(item)),
+      };
     }
     return DEFAULT_CONVERSATION_STATE;
   } catch {
@@ -121,6 +156,7 @@ export function useConversationLocalStorageState(conversationId: string): {
   setRightPanelShown: (shown: boolean) => void;
   setUnpinnedTabs: (tabs: string[]) => void;
   setConversationMode: (mode: ConversationMode) => void;
+  setDraftMessage: (message: string | null) => void;
 } {
   const [state, setState] = useState<ConversationState>(() =>
     getConversationState(conversationId),
@@ -178,5 +214,6 @@ export function useConversationLocalStorageState(conversationId: string): {
     setRightPanelShown: (shown) => updateState({ rightPanelShown: shown }),
     setUnpinnedTabs: (tabs) => updateState({ unpinnedTabs: tabs }),
     setConversationMode: (mode) => updateState({ conversationMode: mode }),
+    setDraftMessage: (message) => updateState({ draftMessage: message }),
   };
 }

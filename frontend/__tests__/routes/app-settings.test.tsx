@@ -1,13 +1,18 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
-import AppSettingsScreen from "#/routes/app-settings";
+import AppSettingsScreen, { clientLoader } from "#/routes/app-settings";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { AvailableLanguages } from "#/i18n";
 import * as CaptureConsent from "#/utils/handle-capture-consent";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+
+beforeEach(() => {
+  useSelectedOrganizationStore.setState({ organizationId: "test-org-id" });
+});
 
 const renderAppSettingsScreen = () =>
   render(<AppSettingsScreen />, {
@@ -17,6 +22,14 @@ const renderAppSettingsScreen = () =>
       </QueryClientProvider>
     ),
   });
+
+describe("clientLoader permission checks", () => {
+  it("should export a clientLoader for route protection", () => {
+    // This test verifies the clientLoader is exported (for consistency with other routes)
+    expect(clientLoader).toBeDefined();
+    expect(typeof clientLoader).toBe("function");
+  });
+});
 
 describe("Content", () => {
   it("should render the screen", () => {
@@ -157,6 +170,25 @@ describe("Form submission", () => {
     expect(submit).not.toBeDisabled();
 
     await userEvent.click(sound);
+    expect(submit).toBeDisabled();
+  });
+
+  it("should keep the submit button disabled while filtering languages without selecting one", async () => {
+    const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
+    getSettingsSpy.mockResolvedValue(MOCK_DEFAULT_USER_SETTINGS);
+
+    const user = userEvent.setup();
+    renderAppSettingsScreen();
+
+    const language = await screen.findByTestId("language-input");
+    const submit = await screen.findByTestId("submit-button");
+
+    expect(language).toHaveValue("English");
+    expect(submit).toBeDisabled();
+
+    await user.click(language);
+    await user.keyboard("Nor");
+
     expect(submit).toBeDisabled();
   });
 

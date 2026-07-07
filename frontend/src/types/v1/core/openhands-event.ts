@@ -1,5 +1,6 @@
 // Import all event types
 import {
+  ACPToolCallEvent,
   ActionEvent,
   MessageEvent,
   ObservationEvent,
@@ -11,7 +12,10 @@ import {
   CondensationSummaryEvent,
   ConversationStateUpdateEvent,
   ConversationErrorEvent,
+  HookExecutionEvent,
   PauseEvent,
+  ServerErrorEvent,
+  StreamingDeltaEvent,
 } from "./events/index";
 
 /**
@@ -26,6 +30,12 @@ export type OpenHandsEvent =
   | UserRejectObservation
   | AgentErrorEvent
   | SystemPromptEvent
+  // ACP sub-agent tool call events
+  | ACPToolCallEvent
+  // Transient LLM token streaming deltas
+  | StreamingDeltaEvent
+  // Hook events
+  | HookExecutionEvent
   // Conversation management events
   | CondensationEvent
   | CondensationRequestEvent
@@ -33,4 +43,5 @@ export type OpenHandsEvent =
   | ConversationStateUpdateEvent
   | ConversationErrorEvent
   // Control events
-  | PauseEvent;
+  | PauseEvent
+  | ServerErrorEvent;

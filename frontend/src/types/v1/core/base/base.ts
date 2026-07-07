@@ -7,6 +7,7 @@ type EventType =
   | "FileEditor"
   | "StrReplaceEditor"
   | "TaskTracker"
+  | "Task"
   | "PlanningFileEditor";
 
 type ActionOnlyType =
@@ -23,11 +24,18 @@ type ActionOnlyType =
 
 type ObservationOnlyType = "Browser";
 
-type ActionEventType = `${ActionOnlyType}Action` | `${EventType}Action`;
+type ActionEventType =
+  | `${ActionOnlyType}Action`
+  | `${EventType}Action`
+  | "GlobAction"
+  | "GrepAction";
 type ObservationEventType =
   | `${ObservationOnlyType}Observation`
   | `${EventType}Observation`
-  | "TerminalObservation";
+  | "TerminalObservation"
+  | "GlobObservation"
+  | "GrepObservation"
+  | "SwitchLLMObservation";
 
 export interface ActionBase<T extends ActionEventType = ActionEventType> {
   kind: T;

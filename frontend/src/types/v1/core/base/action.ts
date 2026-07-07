@@ -244,6 +244,51 @@ export interface PlanningFileEditorAction extends ActionBase<"PlanningFileEditor
   view_range: [number, number] | null;
 }
 
+export interface GlobAction extends ActionBase<"GlobAction"> {
+  /**
+   * The glob pattern to match files against.
+   */
+  pattern: string;
+  /**
+   * The directory to search in.
+   */
+  path: string | null;
+}
+
+export interface GrepAction extends ActionBase<"GrepAction"> {
+  /**
+   * The regex pattern to search for in file contents.
+   */
+  pattern: string;
+  /**
+   * The file or directory to search in.
+   */
+  path: string | null;
+  /**
+   * Glob pattern to filter files.
+   */
+  include: string | null;
+}
+
+export interface TaskAction extends ActionBase<"TaskAction"> {
+  /**
+   * A short (3-5 word) description of the task.
+   */
+  description: string | null;
+  /**
+   * The task for the sub-agent to perform (shown as the "Query").
+   */
+  prompt: string;
+  /**
+   * The type of specialized agent to use for this task.
+   */
+  subagent_type: string;
+  /**
+   * Task ID of the task to resume from, if any.
+   */
+  resume: string | null;
+}
+
 export type Action =
   | MCPToolAction
   | FinishAction
@@ -263,4 +308,7 @@ export type Action =
   | BrowserGoBackAction
   | BrowserListTabsAction
   | BrowserSwitchTabAction
-  | BrowserCloseTabAction;
+  | BrowserCloseTabAction
+  | GlobAction
+  | GrepAction
+  | TaskAction;

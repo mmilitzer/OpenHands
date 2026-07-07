@@ -15,7 +15,7 @@ import { formatTimeDelta } from "#/utils/format-time-delta";
 import { ConversationCard } from "#/components/features/conversation-panel/conversation-card/conversation-card";
 import { clickOnEditButton } from "./utils";
 import { ConversationCardActions } from "#/components/features/conversation-panel/conversation-card/conversation-card-actions";
-import { ConversationStatus } from "#/types/conversation-status";
+import { V1SandboxStatus } from "#/api/sandbox-service/sandbox-service.types";
 
 // We'll use the actual i18next implementation but override the translation function
 
@@ -434,23 +434,69 @@ describe("ConversationCard", () => {
     expect(screen.queryByTestId("ellipsis-button")).not.toBeInTheDocument();
   });
 
-  const statusTable: [ConversationStatus, boolean][] = [
+  it("renders the chip with prettified model text and raw model in the tooltip", () => {
+    renderWithProviders(
+      <ConversationCard
+        onDelete={onDelete}
+        onChangeTitle={onChangeTitle}
+        title="Conversation 1"
+        selectedRepository={null}
+        lastUpdatedAt="2021-10-01T12:00:00Z"
+        agentChip={{
+          kind: "openhands",
+          text: "Claude Sonnet 4",
+          tooltip: "anthropic/claude-sonnet-4-20250514",
+        }}
+      />,
+    );
+
+    const model = screen.getByTestId("conversation-card-llm-model");
+    expect(model).toBeInTheDocument();
+    expect(model).toHaveTextContent("Claude Sonnet 4");
+    expect(model).toHaveAttribute(
+      "title",
+      "anthropic/claude-sonnet-4-20250514",
+    );
+    expect(model.querySelector("svg")).toBeInTheDocument();
+
+    const textSpan = model.querySelector("span.truncate");
+    expect(textSpan).toBeInTheDocument();
+    expect(textSpan).toHaveTextContent("Claude Sonnet 4");
+  });
+
+  it("does not render the chip when agentChip is not provided", () => {
+    renderWithProviders(
+      <ConversationCard
+        onDelete={onDelete}
+        onChangeTitle={onChangeTitle}
+        title="Conversation 1"
+        selectedRepository={null}
+        lastUpdatedAt="2021-10-01T12:00:00Z"
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("conversation-card-llm-model"),
+    ).not.toBeInTheDocument();
+  });
+
+  const statusTable: [V1SandboxStatus, boolean][] = [
     ["RUNNING", true],
     ["STARTING", true],
-    ["STOPPED", false],
-    ["ARCHIVED", false],
     ["ERROR", false],
+    ["PAUSED", false],
+    ["MISSING", false],
   ];
 
   it.each(statusTable)(
-    "should toggle stop button visibility correctly for status",
-    (status, shouldShow) => {
+    "should toggle stop button visibility correctly for sandbox status",
+    (sandboxStatus, shouldShow) => {
       renderWithProviders(
         <ConversationCardActions
           contextMenuOpen={true}
           onContextMenuToggle={vi.fn()}
           onStop={vi.fn()}
-          conversationStatus={status}
+          sandboxStatus={sandboxStatus}
         />,
       );
 

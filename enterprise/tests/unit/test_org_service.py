@@ -139,7 +139,12 @@ async def test_create_org_with_owner_success(
         ),
         patch(
             'storage.org_service.OrgStore.get_kwargs_from_settings',
-            return_value={},
+            return_value={
+                'agent_settings': {
+                    'llm': {'model': 'anthropic/claude-sonnet-4-5-20250929'},
+                },
+                'conversation_settings': {},
+            },
         ),
         patch(
             'storage.org_service.OrgMemberStore.get_kwargs_from_settings',
@@ -160,7 +165,10 @@ async def test_create_org_with_owner_success(
         assert result.contact_name == contact_name
         assert result.contact_email == contact_email
         assert result.org_version > 0  # Should be set to ORG_SETTINGS_VERSION
-        assert result.default_llm_model is not None  # Should be set
+        assert (
+            result.agent_settings['llm']['model']
+            == 'anthropic/claude-sonnet-4-5-20250929'
+        )
 
         # Verify organization was persisted
         with session_maker() as session:
@@ -177,6 +185,77 @@ async def test_create_org_with_owner_success(
             assert org_member is not None
             assert org_member.role_id == 1  # owner role id
             assert org_member.status == 'active'
+
+
+@pytest.mark.asyncio
+async def test_create_org_without_owner_skips_creator_membership(
+    session_maker, async_session_maker
+):
+    """
+    GIVEN: Valid organization data and add_creator_as_owner=False
+    WHEN: create_org_with_owner is called
+    THEN: The organization is created without adding the creator as a member.
+    """
+    user_id = uuid.uuid4()
+    temp_org_id = uuid.uuid4()
+
+    with session_maker() as session:
+        user = User(id=user_id, current_org_id=temp_org_id)
+        session.add(user)
+        session.commit()
+
+    mock_settings = {'team_id': 'test-team', 'user_id': str(user_id)}
+    get_owner_role_mock = AsyncMock()
+    get_member_kwargs_mock = MagicMock(return_value={'llm_api_key': 'test-key'})
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.org_service.UserStore.create_default_settings',
+            AsyncMock(return_value=mock_settings),
+        ) as create_settings_mock,
+        patch(
+            'storage.org_service.OrgStore.get_kwargs_from_settings',
+            return_value={
+                'agent_settings': {
+                    'llm': {'model': 'anthropic/claude-sonnet-4-5-20250929'},
+                },
+                'conversation_settings': {},
+            },
+        ),
+        patch('storage.org_service.OrgService.get_owner_role', get_owner_role_mock),
+        patch(
+            'storage.org_service.OrgMemberStore.get_kwargs_from_settings',
+            get_member_kwargs_mock,
+        ),
+    ):
+        result = await OrgService.create_org_with_owner(
+            name='test-org-no-owner',
+            contact_name='Jane Doe',
+            contact_email='jane@example.com',
+            user_id=str(user_id),
+            add_creator_as_owner=False,
+        )
+
+    create_settings_mock.assert_awaited_once_with(
+        org_id=str(result.id),
+        user_id=str(user_id),
+        create_user=False,
+        add_user_to_litellm_team=False,
+    )
+    get_owner_role_mock.assert_not_awaited()
+    get_member_kwargs_mock.assert_not_called()
+
+    with session_maker() as session:
+        persisted_org = session.get(Org, result.id)
+        assert persisted_org is not None
+        org_member = (
+            session.query(OrgMember)
+            .filter_by(org_id=result.id, user_id=user_id)
+            .first()
+        )
+        assert org_member is None
 
 
 @pytest.mark.asyncio
@@ -1192,8 +1271,12 @@ async def test_update_org_with_permissions_success_llm_fields_admin(
     from server.routes.org_models import OrgUpdate
 
     update_data = OrgUpdate(
-        default_llm_model='claude-opus-4-5-20251101',
-        default_llm_base_url='https://api.anthropic.com',
+        agent_settings_diff={
+            'llm': {
+                'model': 'claude-opus-4-5-20251101',
+                'base_url': 'https://api.anthropic.com',
+            },
+        }
     )
 
     with (
@@ -1210,8 +1293,8 @@ async def test_update_org_with_permissions_success_llm_fields_admin(
 
         # Assert
         assert result is not None
-        assert result.default_llm_model == 'claude-opus-4-5-20251101'
-        assert result.default_llm_base_url == 'https://api.anthropic.com'
+        assert result.agent_settings['llm']['model'] == 'claude-opus-4-5-20251101'
+        assert result.agent_settings['llm']['base_url'] == 'https://api.anthropic.com'
 
 
 @pytest.mark.asyncio
@@ -1254,8 +1337,12 @@ async def test_update_org_with_permissions_success_llm_fields_owner(
     from server.routes.org_models import OrgUpdate
 
     update_data = OrgUpdate(
-        default_llm_model='claude-opus-4-5-20251101',
-        security_analyzer='enabled',
+        agent_settings_diff={
+            'llm': {'model': 'claude-opus-4-5-20251101'},
+        },
+        conversation_settings_diff={
+            'security_analyzer': 'llm',
+        },
     )
 
     with (
@@ -1272,8 +1359,8 @@ async def test_update_org_with_permissions_success_llm_fields_owner(
 
         # Assert
         assert result is not None
-        assert result.default_llm_model == 'claude-opus-4-5-20251101'
-        assert result.security_analyzer == 'enabled'
+        assert result.agent_settings['llm']['model'] == 'claude-opus-4-5-20251101'
+        assert result.conversation_settings['security_analyzer'] == 'llm'
 
 
 @pytest.mark.asyncio
@@ -1317,7 +1404,7 @@ async def test_update_org_with_permissions_success_mixed_fields_admin(
 
     update_data = OrgUpdate(
         contact_name='Jane Doe',
-        default_llm_model='claude-opus-4-5-20251101',
+        agent_settings_diff={'llm': {'model': 'claude-opus-4-5-20251101'}},
         conversation_expiration=30,
     )
 
@@ -1336,7 +1423,7 @@ async def test_update_org_with_permissions_success_mixed_fields_admin(
         # Assert
         assert result is not None
         assert result.contact_name == 'Jane Doe'
-        assert result.default_llm_model == 'claude-opus-4-5-20251101'
+        assert result.agent_settings['llm']['model'] == 'claude-opus-4-5-20251101'
         assert result.conversation_expiration == 30
 
 
@@ -1520,7 +1607,9 @@ async def test_update_org_with_permissions_llm_fields_insufficient_permission(
 
     from server.routes.org_models import OrgUpdate
 
-    update_data = OrgUpdate(default_llm_model='claude-opus-4-5-20251101')
+    update_data = OrgUpdate(
+        agent_settings_diff={'llm': {'model': 'claude-opus-4-5-20251101'}}
+    )
 
     with (
         patch('storage.org_store.a_session_maker', async_session_maker),
@@ -1763,9 +1852,13 @@ async def test_update_org_with_permissions_only_llm_fields(
     from server.routes.org_models import OrgUpdate
 
     update_data = OrgUpdate(
-        default_llm_model='claude-opus-4-5-20251101',
-        security_analyzer='enabled',
-        agent='agent-mode',
+        agent_settings_diff={
+            'llm': {'model': 'claude-opus-4-5-20251101'},
+            'agent': 'agent-mode',
+        },
+        conversation_settings_diff={
+            'security_analyzer': 'llm',
+        },
     )
 
     with (
@@ -1782,9 +1875,9 @@ async def test_update_org_with_permissions_only_llm_fields(
 
         # Assert
         assert result is not None
-        assert result.default_llm_model == 'claude-opus-4-5-20251101'
-        assert result.security_analyzer == 'enabled'
-        assert result.agent == 'agent-mode'
+        assert result.agent_settings['llm']['model'] == 'claude-opus-4-5-20251101'
+        assert result.conversation_settings['security_analyzer'] == 'llm'
+        assert result.agent_settings['agent'] == 'agent-mode'
 
 
 @pytest.mark.asyncio
@@ -1878,18 +1971,28 @@ async def test_check_byor_export_enabled_returns_true_when_enabled():
             new_callable=AsyncMock,
             return_value=mock_org,
         ),
+        patch(
+            'storage.org_service.OrgService.get_org_credits',
+            new_callable=AsyncMock,
+        ) as mock_get_credits,
+        patch(
+            'storage.org_service.OrgStore.enable_byor_export',
+            new_callable=AsyncMock,
+        ) as mock_enable_byor_export,
     ):
         # Act
         result = await OrgService.check_byor_export_enabled(user_id)
 
         # Assert
         assert result is True
+        mock_get_credits.assert_not_called()
+        mock_enable_byor_export.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_check_byor_export_enabled_returns_false_when_disabled():
+async def test_check_byor_export_enabled_returns_false_when_disabled_without_credits():
     """
-    GIVEN: User has current_org with byor_export_enabled=False
+    GIVEN: User has current_org with byor_export_enabled=False and no credits
     WHEN: check_byor_export_enabled is called
     THEN: Returns False
     """
@@ -1913,12 +2016,69 @@ async def test_check_byor_export_enabled_returns_false_when_disabled():
             new_callable=AsyncMock,
             return_value=mock_org,
         ),
+        patch(
+            'storage.org_service.OrgService.get_org_credits',
+            AsyncMock(return_value=0),
+        ) as mock_get_credits,
+        patch(
+            'storage.org_service.OrgStore.enable_byor_export',
+            new_callable=AsyncMock,
+        ) as mock_enable_byor_export,
     ):
         # Act
         result = await OrgService.check_byor_export_enabled(user_id)
 
         # Assert
         assert result is False
+        mock_get_credits.assert_called_once_with(user_id, org_id)
+        mock_enable_byor_export.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_byor_export_enabled_sets_flag_when_disabled_with_credits():
+    """
+    GIVEN: User has current_org with byor_export_enabled=False and credits
+    WHEN: check_byor_export_enabled is called
+    THEN: Persists byor_export_enabled=True and returns True
+    """
+    # Arrange
+    user_id = 'test-user-123'
+    org_id = uuid.uuid4()
+
+    mock_user = MagicMock()
+    mock_user.current_org_id = org_id
+
+    mock_org = MagicMock()
+    mock_org.byor_export_enabled = False
+    enabled_org = MagicMock()
+    enabled_org.byor_export_enabled = True
+
+    with (
+        patch(
+            'storage.org_service.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'storage.org_service.OrgStore.get_org_by_id',
+            new_callable=AsyncMock,
+            return_value=mock_org,
+        ),
+        patch(
+            'storage.org_service.OrgService.get_org_credits',
+            AsyncMock(return_value=25.0),
+        ) as mock_get_credits,
+        patch(
+            'storage.org_service.OrgStore.enable_byor_export',
+            AsyncMock(return_value=enabled_org),
+        ) as mock_enable_byor_export,
+    ):
+        # Act
+        result = await OrgService.check_byor_export_enabled(user_id)
+
+        # Assert
+        assert result is True
+        mock_get_credits.assert_called_once_with(user_id, org_id)
+        mock_enable_byor_export.assert_called_once_with(org_id)
 
 
 @pytest.mark.asyncio

@@ -17,19 +17,21 @@ import { ReauthModal } from "#/components/features/waitlist/reauth-modal";
 import { AnalyticsConsentFormModal } from "#/components/features/analytics/analytics-consent-form-modal";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useMigrateUserConsent } from "#/hooks/use-migrate-user-consent";
-import { SetupPaymentModal } from "#/components/features/payment/setup-payment-modal";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
 import { useAutoLogin } from "#/hooks/use-auto-login";
 import { useAuthCallback } from "#/hooks/use-auth-callback";
 import { useReoTracking } from "#/hooks/use-reo-tracking";
 import { useSyncPostHogConsent } from "#/hooks/use-sync-posthog-consent";
+import { useAutoSelectOrganization } from "#/hooks/use-auto-select-organization";
 import { LOCAL_STORAGE_KEYS } from "#/utils/local-storage";
 import { EmailVerificationGuard } from "#/components/features/guards/email-verification-guard";
+import { OnboardingGuard } from "#/components/features/guards/onboarding-guard";
 import { AlertBanner } from "#/components/features/alerts/alert-banner";
 import { cn } from "#/utils/utils";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { useAppTitle } from "#/hooks/use-app-title";
+import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -84,6 +86,9 @@ export default function MainApp() {
 
   const [consentFormIsOpen, setConsentFormIsOpen] = React.useState(false);
 
+  // Accept a pending invitation token once authenticated
+  useAutoAcceptInvitation();
+
   // Auto-login if login method is stored in local storage
   useAutoLogin();
 
@@ -95,6 +100,9 @@ export default function MainApp() {
 
   // Sync PostHog opt-in/out state with backend setting on mount
   useSyncPostHogConsent();
+
+  // Auto-select the first organization when none is selected
+  useAutoSelectOrganization();
 
   React.useEffect(() => {
     // Don't change language when on intermediate pages (TOS, profile questions)
@@ -228,7 +236,7 @@ export default function MainApp() {
       <title>{appTitle}</title>
       <Sidebar />
 
-      <div className="flex flex-col w-full h-[calc(100%-50px)] md:h-full gap-3">
+      <div className="flex flex-col w-full min-w-0 h-[calc(100%-50px)] md:h-full gap-3">
         {config.data &&
           (config.data.maintenance_start_time ||
             (config.data.faulty_models &&
@@ -245,9 +253,11 @@ export default function MainApp() {
           id="root-outlet"
           className="flex-1 relative overflow-auto custom-scrollbar"
         >
-          <EmailVerificationGuard>
-            <Outlet />
-          </EmailVerificationGuard>
+          <OnboardingGuard>
+            <EmailVerificationGuard>
+              <Outlet />
+            </EmailVerificationGuard>
+          </OnboardingGuard>
         </div>
       </div>
 
@@ -259,10 +269,6 @@ export default function MainApp() {
           }}
         />
       )}
-
-      {config.data?.feature_flags.enable_billing &&
-        config.data?.app_mode === "saas" &&
-        settings?.is_new_user && <SetupPaymentModal />}
     </div>
   );
 }

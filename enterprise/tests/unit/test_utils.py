@@ -55,6 +55,10 @@ def test_markdown_to_jira_markup():
         ('# Header', 'h1. Header'),
         ('`code`', '{{code}}'),
         ('```python\ncode\n```', '{code:python}\ncode\n{code}'),
+        # Unsupported languages (e.g. text) fall back to a plain {code} block so
+        # Jira doesn't warn "no source-code formatter for language: text".
+        ('```text\nplain\n```', '{code}\nplain\n{code}'),
+        ('```TEXT\nx\n```', '{code}\nx\n{code}'),
         ('[link](url)', '[link|url]'),
         ('- item', '* item'),
         ('1. item', '# item'),
@@ -64,9 +68,9 @@ def test_markdown_to_jira_markup():
 
     for markdown, expected in test_cases:
         result = markdown_to_jira_markup(markdown)
-        assert (
-            result == expected
-        ), f'Failed for {repr(markdown)}: got {repr(result)}, expected {repr(expected)}'
+        assert result == expected, (
+            f'Failed for {repr(markdown)}: got {repr(result)}, expected {repr(expected)}'
+        )
 
 
 def test_infer_repo_from_message():
@@ -165,10 +169,49 @@ def test_infer_repo_from_message():
         ('Repos: a/b, c/d, e/f, g/h, i/j', ['a/b', 'c/d', 'e/f', 'g/h', 'i/j']),
         # Mixed with false positives that should be filtered
         ('Check user/repo and avoid 1.0/2.0 and file.txt', ['user/repo']),
+        # Self-hosted GitLab / GitHub Enterprise (generic host, standard layout)
+        (
+            'Deploy https://gitlab.mycorp.com/team/project.git',
+            ['team/project'],
+        ),
+        ('Repo at https://github.mycorp.com/org/service', ['org/service']),
+        # Bitbucket Data Center browse / PR URLs -> <KEY>/<slug>
+        (
+            'See https://bitbucket.mycorp.com/projects/PROJ/repos/my-repo/browse',
+            ['PROJ/my-repo'],
+        ),
+        (
+            'Fix https://bitbucket.mycorp.com/projects/PROJ/repos/my-repo/pull-requests/42',
+            ['PROJ/my-repo'],
+        ),
+        # Bitbucket Data Center clone (scm) URLs, incl. personal (~user) + port
+        (
+            'Clone https://bitbucket.mycorp.com/scm/PROJ/my-repo.git',
+            ['PROJ/my-repo'],
+        ),
+        ('https://bitbucket.mycorp.com/scm/~jdoe/tool.git', ['~jdoe/tool']),
+        ('https://git.internal:7990/scm/TEAM/app.git', ['TEAM/app']),
+        # FDE-86 (1finity): trailing punctuation must not drop a mention, and a
+        # Jira/markdown link-wrapped clone URL must still resolve.
+        ('Is this merged into PF/meta-fnos-pf?', ['PF/meta-fnos-pf']),
+        ('Please look at acme/widgets!', ['acme/widgets']),
+        ('Check acme/widgets; thanks', ['acme/widgets']),
+        ('The fix is in acme/widgets.', ['acme/widgets']),
+        (
+            'merged into [https://bitbucket.fnc.fujitsu.com/scm/pf/meta-fnos-pf.git] ?',
+            ['pf/meta-fnos-pf'],
+        ),
+        (
+            'see [https://bitbucket.fnc.fujitsu.com/scm/pf/meta-fnos-pf.git|'
+            'https://bitbucket.fnc.fujitsu.com/scm/pf/meta-fnos-pf.git]',
+            ['pf/meta-fnos-pf'],
+        ),
+        # Trailing dot must not leak a date as a repo.
+        ('It is due on 1/2.', []),
     ]
 
     for message, expected in test_cases:
         result = infer_repo_from_message(message)
-        assert (
-            result == expected
-        ), f'Failed for {repr(message)}: got {repr(result)}, expected {repr(expected)}'
+        assert result == expected, (
+            f'Failed for {repr(message)}: got {repr(result)}, expected {repr(expected)}'
+        )

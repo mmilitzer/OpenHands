@@ -24,6 +24,7 @@ class AppConversationInfoService(ABC):
         created_at__lt: datetime | None = None,
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
+        sandbox_id__eq: str | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 100,
@@ -39,6 +40,7 @@ class AppConversationInfoService(ABC):
         created_at__lt: datetime | None = None,
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
+        sandbox_id__eq: str | None = None,
     ) -> int:
         """Count sandboxed conversations."""
 
@@ -82,6 +84,14 @@ class AppConversationInfoService(ABC):
             List of sub-conversation IDs
         """
 
+    @abstractmethod
+    async def count_conversations_by_sandbox_id(self, sandbox_id: str) -> int:
+        """Count V1 conversations that reference the given sandbox.
+
+        Used to decide whether a sandbox can be safely deleted when a
+        conversation is removed (only delete if count is 0).
+        """
+
     # Mutators
 
     @abstractmethod
@@ -104,6 +114,19 @@ class AppConversationInfoService(ABC):
         Args:
             event: The ConversationStateUpdateEvent with key='stats'
             conversation_id: The ID of the conversation to update
+        """
+
+    @abstractmethod
+    async def update_execution_status(
+        self,
+        conversation_id: UUID,
+        execution_status: str,
+    ) -> None:
+        """Update the execution status for a conversation.
+
+        Args:
+            conversation_id: The ID of the conversation to update
+            execution_status: The new execution status value
         """
 
 

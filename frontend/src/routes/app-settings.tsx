@@ -8,6 +8,7 @@ import { DEFAULT_SETTINGS } from "#/services/settings";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { SettingsInput } from "#/components/features/settings/settings-input";
+import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import { I18nKey } from "#/i18n/declaration";
 import { LanguageInput } from "#/components/features/settings/app-settings/language-input";
 import { handleCaptureConsent } from "#/utils/handle-capture-consent";
@@ -19,6 +20,16 @@ import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message"
 import { AppSettingsInputsSkeleton } from "#/components/features/settings/app-settings/app-settings-inputs-skeleton";
 import { useConfig } from "#/hooks/query/use-config";
 import { parseMaxBudgetPerTask } from "#/utils/settings-utils";
+import {
+  SandboxGroupingStrategy,
+  SandboxGroupingStrategyOptions,
+} from "#/types/settings";
+import { createPermissionGuard } from "#/utils/org/permission-guard";
+import { useSandboxSpecs } from "#/hooks/query/use-sandbox-specs";
+
+export const clientLoader = createPermissionGuard(
+  "manage_application_settings",
+);
 
 function AppSettingsScreen() {
   const posthog = usePostHog();
@@ -27,6 +38,8 @@ function AppSettingsScreen() {
   const { mutate: saveSettings, isPending } = useSaveSettings();
   const { data: settings, isLoading } = useSettings();
   const { data: config } = useConfig();
+  const { data: sandboxSpecsPage, isLoading: sandboxSpecsLoading } =
+    useSandboxSpecs();
 
   const [languageInputHasChanged, setLanguageInputHasChanged] =
     React.useState(false);
@@ -44,11 +57,24 @@ function AppSettingsScreen() {
     solvabilityAnalysisSwitchHasChanged,
     setSolvabilityAnalysisSwitchHasChanged,
   ] = React.useState(false);
+  const [
+    sandboxGroupingStrategyHasChanged,
+    setSandboxGroupingStrategyHasChanged,
+  ] = React.useState(false);
+  const [selectedSandboxGroupingStrategy, setSelectedSandboxGroupingStrategy] =
+    React.useState<SandboxGroupingStrategy | null>(null);
+  const [sandboxSpecIdHasChanged, setSandboxSpecIdHasChanged] =
+    React.useState(false);
+  const [selectedSandboxSpecId, setSelectedSandboxSpecId] = React.useState<
+    string | null | undefined
+  >(undefined);
   const [maxBudgetPerTaskHasChanged, setMaxBudgetPerTaskHasChanged] =
     React.useState(false);
   const [gitUserNameHasChanged, setGitUserNameHasChanged] =
     React.useState(false);
   const [gitUserEmailHasChanged, setGitUserEmailHasChanged] =
+    React.useState(false);
+  const [gitFullCloneHasChanged, setGitFullCloneHasChanged] =
     React.useState(false);
 
   const formAction = (formData: FormData) => {
@@ -70,6 +96,16 @@ function AppSettingsScreen() {
     const enableSolvabilityAnalysis =
       formData.get("enable-solvability-analysis-switch")?.toString() === "on";
 
+    const sandboxGroupingStrategy =
+      selectedSandboxGroupingStrategy ||
+      settings?.sandbox_grouping_strategy ||
+      DEFAULT_SETTINGS.sandbox_grouping_strategy;
+
+    const defaultSandboxSpecId =
+      selectedSandboxSpecId !== undefined
+        ? selectedSandboxSpecId
+        : (settings?.default_sandbox_spec_id ?? null);
+
     const maxBudgetPerTaskValue = formData
       .get("max-budget-per-task-input")
       ?.toString();
@@ -81,6 +117,8 @@ function AppSettingsScreen() {
     const gitUserEmail =
       formData.get("git-user-email-input")?.toString() ||
       DEFAULT_SETTINGS.git_user_email;
+    const gitFullClone =
+      formData.get("git-full-clone-switch")?.toString() === "on";
 
     saveSettings(
       {
@@ -89,9 +127,12 @@ function AppSettingsScreen() {
         enable_sound_notifications: enableSoundNotifications,
         enable_proactive_conversation_starters: enableProactiveConversations,
         enable_solvability_analysis: enableSolvabilityAnalysis,
+        sandbox_grouping_strategy: sandboxGroupingStrategy,
+        default_sandbox_spec_id: defaultSandboxSpecId,
         max_budget_per_task: maxBudgetPerTask,
         git_user_name: gitUserName,
         git_user_email: gitUserEmail,
+        git_full_clone: gitFullClone,
       },
       {
         onSuccess: () => {
@@ -107,9 +148,14 @@ function AppSettingsScreen() {
           setAnalyticsSwitchHasChanged(false);
           setSoundNotificationsSwitchHasChanged(false);
           setProactiveConversationsSwitchHasChanged(false);
+          setSandboxGroupingStrategyHasChanged(false);
+          setSelectedSandboxGroupingStrategy(null);
+          setSandboxSpecIdHasChanged(false);
+          setSelectedSandboxSpecId(undefined);
           setMaxBudgetPerTaskHasChanged(false);
           setGitUserNameHasChanged(false);
           setGitUserEmailHasChanged(false);
+          setGitFullCloneHasChanged(false);
         },
       },
     );
@@ -154,6 +200,22 @@ function AppSettingsScreen() {
     );
   };
 
+  const handleSandboxGroupingStrategyChange = (key: React.Key | null) => {
+    const newStrategy = key?.toString() as SandboxGroupingStrategy | undefined;
+    setSelectedSandboxGroupingStrategy(newStrategy || null);
+    const currentStrategy =
+      settings?.sandbox_grouping_strategy ||
+      DEFAULT_SETTINGS.sandbox_grouping_strategy;
+    setSandboxGroupingStrategyHasChanged(newStrategy !== currentStrategy);
+  };
+
+  const handleSandboxSpecIdChange = (key: React.Key | null) => {
+    const newSpecId = key?.toString() ?? null;
+    setSelectedSandboxSpecId(newSpecId);
+    const currentSpecId = settings?.default_sandbox_spec_id ?? null;
+    setSandboxSpecIdHasChanged(newSpecId !== currentSpecId);
+  };
+
   const checkIfMaxBudgetPerTaskHasChanged = (value: string) => {
     const newValue = parseMaxBudgetPerTask(value);
     const currentValue = settings?.max_budget_per_task;
@@ -170,15 +232,23 @@ function AppSettingsScreen() {
     setGitUserEmailHasChanged(value !== currentValue);
   };
 
+  const checkIfGitFullCloneHasChanged = (checked: boolean) => {
+    const currentValue = !!settings?.git_full_clone;
+    setGitFullCloneHasChanged(checked !== currentValue);
+  };
+
   const formIsClean =
     !languageInputHasChanged &&
     !analyticsSwitchHasChanged &&
     !soundNotificationsSwitchHasChanged &&
     !proactiveConversationsSwitchHasChanged &&
     !solvabilityAnalysisSwitchHasChanged &&
+    !sandboxGroupingStrategyHasChanged &&
+    !sandboxSpecIdHasChanged &&
     !maxBudgetPerTaskHasChanged &&
     !gitUserNameHasChanged &&
-    !gitUserEmailHasChanged;
+    !gitUserEmailHasChanged &&
+    !gitFullCloneHasChanged;
 
   const shouldBeLoading = !settings || isLoading || isPending;
 
@@ -239,6 +309,44 @@ function AppSettingsScreen() {
             </SettingsSwitch>
           )}
 
+          <SettingsDropdownInput
+            testId="sandbox-grouping-strategy-input"
+            name="sandbox-grouping-strategy-input"
+            label={t(I18nKey.SETTINGS$SANDBOX_GROUPING_STRATEGY)}
+            items={Object.keys(SandboxGroupingStrategyOptions).map((key) => ({
+              key,
+              label: t(`SETTINGS$SANDBOX_GROUPING_${key}` as I18nKey),
+            }))}
+            selectedKey={
+              selectedSandboxGroupingStrategy ||
+              settings.sandbox_grouping_strategy ||
+              DEFAULT_SETTINGS.sandbox_grouping_strategy
+            }
+            isClearable={false}
+            onSelectionChange={handleSandboxGroupingStrategyChange}
+            wrapperClassName="w-full max-w-[680px]"
+          />
+
+          <SettingsDropdownInput
+            testId="default-sandbox-spec-input"
+            name="default-sandbox-spec-input"
+            label={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC)}
+            placeholder={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_PLACEHOLDER)}
+            items={(sandboxSpecsPage?.items ?? []).map((spec) => ({
+              key: spec.id,
+              label: spec.id,
+            }))}
+            selectedKey={
+              selectedSandboxSpecId !== undefined
+                ? selectedSandboxSpecId
+                : settings.default_sandbox_spec_id
+            }
+            isClearable
+            isLoading={sandboxSpecsLoading}
+            onSelectionChange={handleSandboxSpecIdChange}
+            wrapperClassName="w-full max-w-[680px]"
+          />
+
           {!settings?.v1_enabled && (
             <SettingsInput
               testId="max-budget-per-task-input"
@@ -262,6 +370,26 @@ function AppSettingsScreen() {
               {t(I18nKey.SETTINGS$GIT_SETTINGS_DESCRIPTION)}
             </p>
             <div className="flex flex-col gap-6">
+              <div className="flex flex-col gap-2 max-w-[680px]">
+                <h4 className="text-sm font-medium">
+                  {t(I18nKey.SETTINGS$REPOSITORY_CLONING)}
+                </h4>
+                <p className="text-xs">
+                  {t(I18nKey.SETTINGS$REPOSITORY_CLONING_DESCRIPTION)}
+                </p>
+                <SettingsSwitch
+                  testId="git-full-clone-switch"
+                  name="git-full-clone-switch"
+                  defaultIsToggled={!!settings.git_full_clone}
+                  onToggle={checkIfGitFullCloneHasChanged}
+                >
+                  {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY)}
+                </SettingsSwitch>
+                <p className="text-xs">
+                  {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY_HELPER)}
+                </p>
+              </div>
+
               <SettingsInput
                 testId="git-user-name-input"
                 name="git-user-name-input"
@@ -269,7 +397,7 @@ function AppSettingsScreen() {
                 label={t(I18nKey.SETTINGS$GIT_USERNAME)}
                 defaultValue={settings.git_user_name || ""}
                 onChange={checkIfGitUserNameHasChanged}
-                placeholder="Username for git commits"
+                placeholder={t(I18nKey.SETTINGS$GIT_USERNAME_PLACEHOLDER)}
                 className="w-full max-w-[680px]"
               />
               <SettingsInput
@@ -279,7 +407,7 @@ function AppSettingsScreen() {
                 label={t(I18nKey.SETTINGS$GIT_EMAIL)}
                 defaultValue={settings.git_user_email || ""}
                 onChange={checkIfGitUserEmailHasChanged}
-                placeholder="Email for git commits"
+                placeholder={t(I18nKey.SETTINGS$GIT_EMAIL_PLACEHOLDER)}
                 className="w-full max-w-[680px]"
               />
             </div>

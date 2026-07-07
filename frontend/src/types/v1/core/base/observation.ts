@@ -217,6 +217,110 @@ export interface PlanningFileEditorObservation extends ObservationBase<"Planning
   new_content: string | null;
 }
 
+export interface GlobObservation extends ObservationBase<"GlobObservation"> {
+  /**
+   * Content returned from the tool as a list of TextContent/ImageContent objects.
+   */
+  content: Array<TextContent | ImageContent>;
+  /**
+   * Whether the call resulted in an error.
+   */
+  is_error: boolean;
+  /**
+   * List of matching file paths sorted by modification time.
+   */
+  files: string[];
+  /**
+   * The glob pattern that was used.
+   */
+  pattern: string;
+  /**
+   * The directory that was searched.
+   */
+  search_path: string;
+  /**
+   * Whether results were truncated to 100 files.
+   */
+  truncated: boolean;
+}
+
+export interface GrepObservation extends ObservationBase<"GrepObservation"> {
+  /**
+   * Content returned from the tool as a list of TextContent/ImageContent objects.
+   */
+  content: Array<TextContent | ImageContent>;
+  /**
+   * Whether the call resulted in an error.
+   */
+  is_error: boolean;
+  /**
+   * List of file paths containing the pattern.
+   */
+  matches: string[];
+  /**
+   * The regex pattern that was used.
+   */
+  pattern: string;
+  /**
+   * The directory that was searched.
+   */
+  search_path: string;
+  /**
+   * The file pattern filter that was used.
+   */
+  include_pattern: string | null;
+  /**
+   * Whether results were truncated to 100 files.
+   */
+  truncated: boolean;
+}
+
+export interface SwitchLLMObservation extends ObservationBase<"SwitchLLMObservation"> {
+  /**
+   * Content returned from the switch LLM tool.
+   */
+  content: Array<TextContent | ImageContent>;
+  /**
+   * Whether the profile switch resulted in an error.
+   */
+  is_error: boolean;
+  /**
+   * Name of the profile the agent attempted to activate.
+   */
+  profile_name: string;
+  /**
+   * Reason the agent gave for the switch.
+   */
+  reason: string | null;
+  /**
+   * Model configured by the activated profile, when available.
+   */
+  active_model: string | null;
+}
+
+export interface TaskObservation extends ObservationBase<"TaskObservation"> {
+  /**
+   * Result content returned by the sub-agent.
+   */
+  content: Array<TextContent | ImageContent>;
+  /**
+   * Whether the task resulted in an error.
+   */
+  is_error: boolean;
+  /**
+   * The unique identifier of the task.
+   */
+  task_id: string;
+  /**
+   * The sub-agent that executed the task.
+   */
+  subagent: string;
+  /**
+   * The status of the task.
+   */
+  status: string;
+}
+
 export type Observation =
   | MCPToolObservation
   | FinishObservation
@@ -227,4 +331,8 @@ export type Observation =
   | FileEditorObservation
   | StrReplaceEditorObservation
   | TaskTrackerObservation
-  | PlanningFileEditorObservation;
+  | PlanningFileEditorObservation
+  | GlobObservation
+  | GrepObservation
+  | SwitchLLMObservation
+  | TaskObservation;

@@ -8,7 +8,7 @@ import pytest
 from integrations.jira.jira_manager import JiraManager
 from integrations.jira.jira_payload import JiraEventType, JiraWebhookPayload
 
-from openhands.server.types import (
+from openhands.app_server.types import (
     LLMAuthenticationError,
     MissingSettingsError,
     SessionExpiredError,
@@ -202,14 +202,10 @@ class TestStartJob:
         )
         jira_manager._send_comment = AsyncMock()
 
-        with patch(
-            'integrations.jira.jira_manager.register_callback_processor'
-        ) as mock_register:
-            await jira_manager.start_job(new_conversation_view)
+        await jira_manager.start_job(new_conversation_view)
 
-            new_conversation_view.create_or_update_conversation.assert_called_once()
-            mock_register.assert_called_once()
-            jira_manager._send_comment.assert_called_once()
+        new_conversation_view.create_or_update_conversation.assert_called_once()
+        jira_manager._send_comment.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_start_job_missing_settings_error(
@@ -283,6 +279,26 @@ class TestSendMessage:
 
             assert result == {'id': 'comment_id'}
             mock_response.raise_for_status.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_message_uses_configured_timeout(self, jira_manager):
+        """Server-side Jira Cloud calls use the configured timeout, not httpx's 5s default."""
+        from server.auth.constants import JIRA_HTTP_TIMEOUT
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'id': 'comment_id'}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=mock_response
+            )
+
+            await jira_manager.send_message(
+                'Test message', 'PROJ-123', 'cloud-123', 'service@test.com', 'api_key'
+            )
+
+            assert mock_client.call_args.kwargs['timeout'] == JIRA_HTTP_TIMEOUT
 
 
 class TestSendErrorFromPayload:

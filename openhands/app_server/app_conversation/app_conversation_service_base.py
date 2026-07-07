@@ -1,10 +1,12 @@
+import asyncio
 import logging
 import os
+import shlex
 import tempfile
 from abc import ABC
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncGenerator
+from typing import TYPE_CHECKING, Any, AsyncGenerator
 from uuid import UUID
 
 if TYPE_CHECKING:
@@ -21,28 +23,33 @@ from openhands.app_server.app_conversation.app_conversation_service import (
     AppConversationService,
 )
 from openhands.app_server.app_conversation.skill_loader import (
-    build_org_config,
+    build_org_configs,
     build_sandbox_config,
     load_skills_from_agent_server,
 )
+from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.sandbox import workspace_archive
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
+from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
-from openhands.sdk import Agent
-from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.condenser import LLMSummarizingCondenser
-from openhands.sdk.context.skills import Skill
+from openhands.app_server.utils.auth import looks_like_jwt
+from openhands.app_server.utils.git import ensure_valid_git_branch_name
+from openhands.sdk import Agent, LLMSummarizingCondenser
+from openhands.sdk.context import AgentContext
 from openhands.sdk.llm import LLM
-from openhands.sdk.security.analyzer import SecurityAnalyzerBase
-from openhands.sdk.security.confirmation_policy import (
+from openhands.sdk.security import (
     AlwaysConfirm,
     ConfirmationPolicyBase,
     ConfirmRisky,
+    LLMSecurityAnalyzer,
     NeverConfirm,
+    SecurityAnalyzerBase,
 )
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.skills import Skill
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 _logger = logging.getLogger(__name__)
+
 PRE_COMMIT_HOOK = '.git/hooks/pre-commit'
 PRE_COMMIT_LOCAL = '.git/hooks/pre-commit.local'
 
@@ -97,6 +104,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         selected_repository: str | None,
         project_dir: str,
         agent_server_url: str,
+        registered_marketplaces: list[MarketplaceRegistration] | None = None,
     ) -> list[Skill]:
         """Load skills from all sources via the agent-server.
 
@@ -105,14 +113,18 @@ class AppConversationServiceBase(AppConversationService, ABC):
         - Public skills (from OpenHands/skills GitHub repo)
         - User skills (from ~/.openhands/skills/)
         - Organization skills (from {org}/.openhands repo)
-        - Project/repo skills (from workspace .openhands/skills/)
+        - Project/repo skills (from repo .agents/skills/, .openhands/microagents/, and legacy .openhands/skills/)
         - Sandbox skills (from exposed URLs)
+        - Registered marketplaces (from user settings)
 
         Args:
             sandbox: SandboxInfo containing exposed URLs and agent-server URL
             selected_repository: Repository name or None
             project_dir: Project root directory (resolved via get_project_dir).
             agent_server_url: Agent-server URL (required)
+            registered_marketplaces: Optional list of MarketplaceRegistration objects
+                from user settings. Marketplaces with auto_load=True will have
+                their plugins loaded automatically.
 
         Returns:
             List of merged Skill objects from all sources, or empty list on failure
@@ -124,8 +136,10 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 _logger.warning('No agent-server URL available, cannot load skills')
                 return []
 
-            # Build org config (authentication handled by app-server)
-            org_config = await build_org_config(selected_repository, self.user_context)
+            # Build org configs (authentication handled by app-server)
+            org_configs = await build_org_configs(
+                selected_repository, self.user_context
+            )
 
             # Build sandbox config (exposed URLs)
             sandbox_config = build_sandbox_config(sandbox)
@@ -135,12 +149,13 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 agent_server_url=agent_server_url,
                 session_api_key=sandbox.session_api_key,
                 project_dir=project_dir,
-                org_config=org_config,
+                org_configs=org_configs,
                 sandbox_config=sandbox_config,
                 load_public=True,
                 load_user=True,
                 load_project=True,
                 load_org=True,
+                registered_marketplaces=registered_marketplaces,
             )
 
             _logger.info(
@@ -209,6 +224,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
         remote_workspace: AsyncRemoteWorkspace,
         selected_repository: str | None,
         project_dir: str,
+        disabled_skills: list[str] | None = None,
+        registered_marketplaces: list[MarketplaceRegistration] | None = None,
     ):
         """Load all skills and update agent with them.
 
@@ -217,6 +234,9 @@ class AppConversationServiceBase(AppConversationService, ABC):
             remote_workspace: AsyncRemoteWorkspace for loading repo skills
             selected_repository: Repository name or None (used for org config)
             project_dir: Project root directory (already resolved via get_project_dir).
+            disabled_skills: Optional list of skill names to exclude
+            registered_marketplaces: Optional composed marketplaces (instance +
+                org + user) whose auto_load plugins the agent-server should load.
 
         Returns:
             Updated agent with skills loaded into context
@@ -227,7 +247,13 @@ class AppConversationServiceBase(AppConversationService, ABC):
             selected_repository,
             project_dir,
             agent_server_url,
+            registered_marketplaces=registered_marketplaces,
         )
+
+        # Filter out disabled skills
+        if disabled_skills:
+            disabled_set = set(disabled_skills)
+            all_skills = [s for s in all_skills if s.name not in disabled_set]
 
         # Update agent with skills
         agent = self._create_agent_with_skills(agent, all_skills)
@@ -240,10 +266,11 @@ class AppConversationServiceBase(AppConversationService, ABC):
         sandbox: SandboxInfo,
         workspace: AsyncRemoteWorkspace,
         agent_server_url: str,
+        conversation_id: UUID,
     ) -> AsyncGenerator[AppConversationStartTask, None]:
         task.status = AppConversationStartTaskStatus.PREPARING_REPOSITORY
         yield task
-        await self.clone_or_init_git_repo(task, workspace)
+        await self.clone_or_init_git_repo(task, workspace, sandbox)
 
         # Compute the project root — the cloned repo directory when a repo is
         # selected, or the sandbox working_dir otherwise.  This must be used
@@ -251,6 +278,28 @@ class AppConversationServiceBase(AppConversationService, ABC):
         project_dir = get_project_dir(
             workspace.working_dir, task.request.selected_repository
         )
+
+        # Snapshot the INITIAL workspace (repo exactly as cloned, before setup.sh)
+        # for downstream dataset/eval creation. Awaited HERE — before any
+        # mutating step — so
+        # the capture is deterministic and can't race setup.sh writing the same
+        # tree. Best-effort and bounded so it never fails or unduly delays startup.
+        try:
+            await asyncio.wait_for(
+                self._maybe_archive_initial_state(
+                    task,
+                    sandbox,
+                    workspace,
+                    agent_server_url,
+                    project_dir,
+                    conversation_id,
+                ),
+                timeout=workspace_archive.initial_archive_deadline(),
+            )
+        except Exception as e:
+            _logger.warning(
+                'Initial workspace archive did not complete in time (ignored): %s', e
+            )
 
         task.status = AppConversationStartTaskStatus.RUNNING_SETUP_SCRIPT
         yield task
@@ -268,6 +317,55 @@ class AppConversationServiceBase(AppConversationService, ABC):
             project_dir,
             agent_server_url,
         )
+
+    async def _maybe_archive_initial_state(
+        self,
+        task: AppConversationStartTask,
+        sandbox: SandboxInfo,
+        workspace: AsyncRemoteWorkspace,
+        agent_server_url: str,
+        project_dir: str,
+        conversation_id: UUID,
+    ) -> None:
+        """Snapshot the initial (as-cloned) workspace state — best-effort.
+
+        Awaited before setup.sh, so it captures the repo exactly as cloned with no
+        concurrent mutation, keyed to the real conversation id. No-op unless
+        ``RUNTIME_FILE_ARCHIVE_INITIAL_ENABLED`` is set and a repository was
+        actually cloned (an empty workspace is not a useful starting state).
+        Every failure is swallowed so this can never break conversation startup.
+        """
+        try:
+            if not workspace_archive.initial_archive_enabled():
+                return
+            if not task.request.selected_repository:
+                # Only repo-backed conversations have a meaningful initial state.
+                return
+
+            # Record the commit the snapshot came from — tar.gz carries no
+            # base-commit header. Best-effort: a miss just leaves base_commit ''.
+            base_commit = ''
+            try:
+                result = await workspace.execute_command(
+                    'git rev-parse HEAD', project_dir
+                )
+                if not result.exit_code:
+                    base_commit = result.stdout.strip()
+            except Exception as e:
+                _logger.debug('Initial-state base commit lookup failed: %s', e)
+
+            conv_hex = conversation_id.hex if conversation_id else None
+            await workspace_archive.archive_initial_workspace(
+                workspace.client,
+                agent_server_url=agent_server_url,
+                session_api_key=sandbox.session_api_key,
+                project_dir=project_dir,
+                sandbox_id=sandbox.id,
+                conversation_id=conv_hex,
+                base_commit=base_commit,
+            )
+        except Exception as e:
+            _logger.warning('Initial workspace archive step failed (ignored): %s', e)
 
     async def _configure_git_user_settings(
         self,
@@ -310,13 +408,14 @@ class AppConversationServiceBase(AppConversationService, ABC):
         self,
         task: AppConversationStartTask,
         workspace: AsyncRemoteWorkspace,
+        sandbox: SandboxInfo | None = None,
     ):
         request = task.request
 
         # Create the projects directory if it does not exist yet
         parent = Path(workspace.working_dir).parent
         result = await workspace.execute_command(
-            f'mkdir {workspace.working_dir}', parent
+            f'mkdir -p {workspace.working_dir}', parent
         )
         if result.exit_code:
             _logger.warning(f'mkdir failed: {result.stderr}')
@@ -338,6 +437,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 _logger.info('Not initializing a new git repository.')
             return
 
+        user_info = await self.user_context.get_user_info()
         remote_repo_url: str = await self.user_context.get_authenticated_git_url(
             request.selected_repository
         )
@@ -345,27 +445,160 @@ class AppConversationServiceBase(AppConversationService, ABC):
             raise ValueError('Missing either Git token or valid repository')
 
         dir_name = request.selected_repository.split('/')[-1]
+        quoted_remote_repo_url = shlex.quote(remote_repo_url)
+        quoted_dir_name = shlex.quote(dir_name)
+        git_dir = Path(workspace.working_dir) / dir_name
+        azure_devops_bearer_token = await self._get_azure_devops_bearer_token_for_git(
+            request.git_provider,
+            remote_repo_url,
+        )
+
+        if request.selected_branch:
+            ensure_valid_git_branch_name(request.selected_branch)
+
+        full_clone = bool(getattr(user_info, 'git_full_clone', False))
+        clone_flags = ''
+        if not full_clone:
+            clone_flags = ' --depth 1'
+            if request.selected_branch:
+                clone_flags += f' --branch {shlex.quote(request.selected_branch)}'
 
         # Clone the repo - this is the slow part!
-        clone_command = f'git clone {remote_repo_url} {dir_name}'
+        if azure_devops_bearer_token:
+            auth_header = shlex.quote(
+                f'Authorization: Bearer {azure_devops_bearer_token}'
+            )
+            clone_command = (
+                f'git -c http.extraheader={auth_header} clone{clone_flags} '
+                f'{quoted_remote_repo_url} {quoted_dir_name}'
+            )
+        else:
+            clone_command = (
+                f'git clone{clone_flags} {quoted_remote_repo_url} {quoted_dir_name}'
+            )
         result = await workspace.execute_command(
             clone_command, workspace.working_dir, 120
         )
         if result.exit_code:
             _logger.warning(f'Git clone failed: {result.stderr}')
+        elif azure_devops_bearer_token:
+            await self._configure_azure_devops_git_credential_helper(
+                workspace,
+                git_dir,
+                request.selected_repository,
+                sandbox,
+            )
 
         # Checkout the appropriate branch
         if request.selected_branch:
-            checkout_command = f'git checkout {request.selected_branch}'
+            # Needed for full clones; harmless no-op after shallow clones with --branch.
+            checkout_command = f'git checkout {shlex.quote(request.selected_branch)}'
         else:
             # Generate a random branch name to avoid conflicts
             random_str = base62.encodebytes(os.urandom(16))
             openhands_workspace_branch = f'openhands-workspace-{random_str}'
-            checkout_command = f'git checkout -b {openhands_workspace_branch}'
-        git_dir = Path(workspace.working_dir) / dir_name
+            checkout_command = (
+                f'git checkout -b {shlex.quote(openhands_workspace_branch)}'
+            )
         result = await workspace.execute_command(checkout_command, git_dir)
         if result.exit_code:
             _logger.warning(f'Git checkout failed: {result.stderr}')
+
+    async def _get_azure_devops_bearer_token_for_git(
+        self,
+        git_provider: ProviderType | None,
+        remote_repo_url: str,
+    ) -> str | None:
+        if (
+            git_provider != ProviderType.AZURE_DEVOPS
+            and 'dev.azure.com' not in remote_repo_url
+        ):
+            return None
+
+        try:
+            token = await self.user_context.get_latest_token(ProviderType.AZURE_DEVOPS)
+        except Exception as exc:
+            _logger.warning(f'Failed to get Azure DevOps token for git: {exc}')
+            return None
+        if token and looks_like_jwt(token):
+            return token
+        return None
+
+    async def _configure_azure_devops_git_credential_helper(
+        self,
+        workspace: AsyncRemoteWorkspace,
+        git_dir: Path,
+        selected_repository: str,
+        sandbox: SandboxInfo | None,
+    ) -> None:
+        if sandbox is None:
+            _logger.warning(
+                'Skipping Azure DevOps git credential helper setup: missing sandbox'
+            )
+            return
+
+        org = selected_repository.split('/')[0]
+        helper_path = git_dir / '.git' / 'openhands-azure-devops-credential-helper'
+        secret_path = (
+            f'/api/v1/sandboxes/{sandbox.id}/settings/secrets/azure_devops_token'
+        )
+        web_url = getattr(self, 'web_url', None)
+        if web_url is None:
+            _logger.debug(
+                'Azure DevOps git credential helper has no configured web_url; '
+                'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
+            )
+        app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
+        helper_script = f"""#!/bin/sh
+if [ "$1" != "get" ]; then
+  exit 0
+fi
+
+session_api_key="${{OH_SESSION_API_KEYS_0:-${{SESSION_API_KEY:-}}}}"
+webhook_url="${{OH_WEBHOOKS_0_BASE_URL:-}}"
+app_base_url={app_base_url}
+if [ -n "$webhook_url" ]; then
+  base_url="${{webhook_url%/api/v1/webhooks}}"
+else
+  base_url="$app_base_url"
+fi
+if [ -z "$session_api_key" ] || [ -z "$base_url" ]; then
+  exit 0
+fi
+
+secret_url="$base_url{secret_path}"
+token="$(curl -fsS \\
+  -H "X-Session-API-Key: $session_api_key" \\
+  "$secret_url" 2>/dev/null)" || exit 0
+if [ -z "$token" ]; then
+  exit 0
+fi
+
+printf '%s\\n' "username=oauth2"
+printf 'password=%s\\n' "$token"
+"""
+        helper_path_quoted = shlex.quote(str(helper_path))
+        helper_value = shlex.quote(f'!{shlex.quote(str(helper_path))}')
+        extraheader_key = shlex.quote(f'http.https://dev.azure.com/{org}/.extraheader')
+        credential_username_key = shlex.quote(
+            f'credential.https://dev.azure.com/{org}.username'
+        )
+        credential_helper_key = shlex.quote(
+            f'credential.https://dev.azure.com/{org}.helper'
+        )
+        command = (
+            f'printf %s {shlex.quote(helper_script)} > {helper_path_quoted}'
+            f' && chmod 700 {helper_path_quoted}'
+            f' && (git config --local --unset-all {extraheader_key} || true)'
+            f' && git config --local {credential_username_key} oauth2'
+            f' && git config --local {credential_helper_key} {helper_value}'
+            ' && git config --local credential.useHttpPath true'
+        )
+        result = await workspace.execute_command(command, git_dir)
+        if result.exit_code:
+            _logger.warning(
+                f'Azure DevOps git credential helper setup failed: {result.stderr}'
+            )
 
     async def maybe_run_setup_script(
         self,
@@ -398,14 +631,18 @@ class AppConversationServiceBase(AppConversationService, ABC):
             project_dir: Project root directory (repo root when a repo is selected).
         """
         command = 'mkdir -p .git/hooks && chmod +x .openhands/pre-commit.sh'
-        result = await workspace.execute_command(command, project_dir)
-        if result.exit_code:
+        pre_commit_command_result = await workspace.execute_command(
+            command, project_dir
+        )
+        if pre_commit_command_result.exit_code:
             return
 
         # Check if there's an existing pre-commit hook
         with tempfile.TemporaryFile(mode='w+t') as temp_file:
-            result = workspace.file_download(PRE_COMMIT_HOOK, str(temp_file))
-            if result.get('success'):
+            download_result = await workspace.file_download(
+                PRE_COMMIT_HOOK, str(temp_file)
+            )
+            if download_result.success:
                 _logger.info('Preserving existing pre-commit hook')
                 # an existing pre-commit hook exists
                 if 'This hook was installed by OpenHands' not in temp_file.read():
@@ -414,10 +651,12 @@ class AppConversationServiceBase(AppConversationService, ABC):
                         f'mv {PRE_COMMIT_HOOK} {PRE_COMMIT_LOCAL} &&'
                         f'chmod +x {PRE_COMMIT_LOCAL}'
                     )
-                    result = await workspace.execute_command(command, project_dir)
-                    if result.exit_code != 0:
+                    mv_chmod_result = await workspace.execute_command(
+                        command, project_dir
+                    )
+                    if mv_chmod_result.exit_code != 0:
                         _logger.error(
-                            f'Failed to preserve existing pre-commit hook: {result.stderr}',
+                            f'Failed to preserve existing pre-commit hook: {mv_chmod_result.stderr}',
                         )
                         return
 
@@ -428,9 +667,11 @@ class AppConversationServiceBase(AppConversationService, ABC):
         )
 
         # Make the pre-commit hook executable
-        result = await workspace.execute_command(f'chmod +x {PRE_COMMIT_HOOK}')
-        if result.exit_code:
-            _logger.error(f'Failed to make pre-commit hook executable: {result.stderr}')
+        chmod_result = await workspace.execute_command(f'chmod +x {PRE_COMMIT_HOOK}')
+        if chmod_result.exit_code:
+            _logger.error(
+                f'Failed to make pre-commit hook executable: {chmod_result.stderr}'
+            )
             return
 
         _logger.info('Git pre-commit hook installed successfully')
@@ -452,7 +693,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             Configured LLMSummarizingCondenser instance
         """
         # LLMSummarizingCondenser SDK defaults: max_size=240, keep_first=2
-        condenser_kwargs = {
+        condenser_kwargs: dict[str, Any] = {
             'llm': llm.model_copy(
                 update={
                     'usage_id': (

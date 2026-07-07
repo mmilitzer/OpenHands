@@ -1,43 +1,40 @@
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { OpenHandsEvent, MessageEvent, ActionEvent } from "#/types/v1/core";
-import { FinishAction } from "#/types/v1/core/base/action";
+import { FinishAction, ThinkAction } from "#/types/v1/core/base/action";
+import { I18nKey } from "#/i18n/declaration";
 import {
   isActionEvent,
   isObservationEvent,
   isAgentErrorEvent,
   isUserMessageEvent,
   isPlanningFileEditorObservationEvent,
+  isHookExecutionEvent,
+  isACPToolCallEvent,
+  isStreamingDeltaEvent,
 } from "#/types/v1/type-guards";
-import { MicroagentStatus } from "#/types/microagent-status";
 import { useConfig } from "#/hooks/query/use-config";
 import { useConversationStore } from "#/stores/conversation-store";
 import { useAgentState } from "#/hooks/use-agent-state";
 import { AgentState } from "#/types/agent-state";
-// TODO: Implement V1 feedback functionality when API supports V1 event IDs
-// import { useFeedbackExists } from "#/hooks/query/use-feedback-exists";
+import { ChatMessage } from "../../features/chat/chat-message";
+import { GenericEventMessage } from "../../features/chat/generic-event-message";
+import { PlanPreview } from "../../features/chat/plan-preview";
 import {
   ErrorEventMessage,
   UserAssistantEventMessage,
   FinishEventMessage,
   GenericEventMessageWrapper,
   ThoughtEventMessage,
+  HookExecutionEventMessage,
 } from "./event-message-components";
 import { createSkillReadyEvent } from "./event-content-helpers/create-skill-ready-event";
-import { PlanPreview } from "../../features/chat/plan-preview";
 import { shouldShowPlanPreview } from "./hooks/use-plan-preview-events";
 
 interface EventMessageProps {
   event: OpenHandsEvent & { isFromPlanningAgent?: boolean };
   messages: OpenHandsEvent[];
   isLastMessage: boolean;
-  microagentStatus?: MicroagentStatus | null;
-  microagentConversationId?: string;
-  microagentPRUrl?: string;
-  actions?: Array<{
-    icon: React.ReactNode;
-    onClick: () => void;
-    tooltip?: string;
-  }>;
   isInLast10Actions: boolean;
   /** Set of event IDs that should render PlanPreview (one per user message phase) */
   planPreviewEventIds?: Set<string>;
@@ -81,19 +78,9 @@ const shouldShowSkillReadyEvent = (messageEvent: MessageEvent): boolean => {
 };
 
 interface CommonProps {
-  microagentStatus?: MicroagentStatus | null;
-  microagentConversationId?: string;
-  microagentPRUrl?: string;
-  actions?: Array<{
-    icon: React.ReactNode;
-    onClick: () => void;
-    tooltip?: string;
-  }>;
   isLastMessage: boolean;
   isInLast10Actions: boolean;
   config: unknown;
-  isCheckingFeedback: boolean;
-  feedbackData: { exists: boolean };
   isFromPlanningAgent: boolean;
 }
 
@@ -111,10 +98,6 @@ const renderUserMessageWithSkillReady = (
       <>
         <UserAssistantEventMessage
           event={messageEvent}
-          microagentStatus={commonProps.microagentStatus}
-          microagentConversationId={commonProps.microagentConversationId}
-          microagentPRUrl={commonProps.microagentPRUrl}
-          actions={commonProps.actions}
           isLastMessage={false}
           isFromPlanningAgent={commonProps.isFromPlanningAgent}
         />
@@ -126,14 +109,9 @@ const renderUserMessageWithSkillReady = (
     );
   } catch (error) {
     // If skill ready event creation fails, just render the user message
-    // Failed to create skill ready event, fallback to user message
     return (
       <UserAssistantEventMessage
         event={messageEvent}
-        microagentStatus={commonProps.microagentStatus}
-        microagentConversationId={commonProps.microagentConversationId}
-        microagentPRUrl={commonProps.microagentPRUrl}
-        actions={commonProps.actions}
         isLastMessage={isLastMessage}
         isFromPlanningAgent={commonProps.isFromPlanningAgent}
       />
@@ -146,13 +124,10 @@ export function EventMessage({
   event,
   messages,
   isLastMessage,
-  microagentStatus,
-  microagentConversationId,
-  microagentPRUrl,
-  actions,
   isInLast10Actions,
   planPreviewEventIds,
 }: EventMessageProps) {
+  const { t } = useTranslation();
   const { data: config } = useConfig();
   const { planContent } = useConversationStore();
   const { curAgentState } = useAgentState();
@@ -162,31 +137,64 @@ export function EventMessage({
     curAgentState === AgentState.RUNNING ||
     curAgentState === AgentState.LOADING;
 
-  // V1 events use string IDs, but useFeedbackExists expects number
-  // For now, we'll skip feedback functionality for V1 events
-  const feedbackData = { exists: false };
-  const isCheckingFeedback = false;
-
   // Read isFromPlanningAgent directly from the event object
   const isFromPlanningAgent = event.isFromPlanningAgent || false;
 
   // Common props for components that need them
   const commonProps = {
-    microagentStatus,
-    microagentConversationId,
-    microagentPRUrl,
-    actions,
     isLastMessage,
     isInLast10Actions,
     config,
-    isCheckingFeedback,
-    feedbackData,
     isFromPlanningAgent,
   };
 
   // Agent error events
   if (isAgentErrorEvent(event)) {
     return <ErrorEventMessage event={event} {...commonProps} />;
+  }
+
+  // Hook execution events
+  if (isHookExecutionEvent(event)) {
+    return <HookExecutionEventMessage event={event} />;
+  }
+
+  // ACP sub-agent tool call events (Claude Code, Codex, Gemini CLI, …)
+  // render through the same generic wrapper used for observation events so
+  // the card shape, success indicator and markdown rendering all match.
+  if (isACPToolCallEvent(event)) {
+    return (
+      <GenericEventMessageWrapper event={event} isLastMessage={isLastMessage} />
+    );
+  }
+
+  // Streaming token deltas - the live, growing assistant bubble. Consecutive
+  // deltas are merged upstream (handleEventForUI / event store) into this single
+  // event, and the turn's final MessageEvent is reconciled into it rather than
+  // appended, so this same bubble becomes the finalized message.
+  if (isStreamingDeltaEvent(event)) {
+    const reasoning = event.reasoning_content ?? "";
+    const message = event.content ?? "";
+    return (
+      <>
+        {reasoning && (
+          // Render the streamed reasoning as a collapsible "Thinking" section
+          // (collapsed by default) so it's distinct from the answer and doesn't
+          // dominate the bubble.
+          <GenericEventMessage
+            title={t(I18nKey.EVENT$THINKING)}
+            details={reasoning}
+            initiallyExpanded={false}
+          />
+        )}
+        {message && (
+          <ChatMessage
+            type="agent"
+            message={message}
+            isFromPlanningAgent={isFromPlanningAgent}
+          />
+        )}
+      </>
+    );
   }
 
   // Finish actions
@@ -199,13 +207,26 @@ export function EventMessage({
     );
   }
 
+  // ThinkAction - render the thought as a normal chat message (not a collapsible block)
+  // The thought content IS the action, so we use event.action.thought directly
+  // instead of event.thought (which contains the raw tool call text).
+  if (isActionEvent(event) && event.action.kind === "ThinkAction") {
+    const thinkAction = event as ActionEvent<ThinkAction>;
+    return (
+      <ChatMessage
+        type="agent"
+        message={thinkAction.action.thought}
+        isFromPlanningAgent={isFromPlanningAgent}
+      />
+    );
+  }
+
   // Action events - render thought + action (will be replaced by thought + observation)
   if (isActionEvent(event)) {
     return (
       <>
         <ThoughtEventMessage
           event={event}
-          actions={actions}
           isFromPlanningAgent={isFromPlanningAgent}
         />
         <GenericEventMessageWrapper
@@ -247,18 +268,28 @@ export function EventMessage({
       (msg) => isActionEvent(msg) && msg.id === event.action_id,
     );
 
+    // Skip ThoughtEventMessage for ThinkAction (thought IS the action)
+    const shouldShowThought =
+      correspondingAction &&
+      isActionEvent(correspondingAction) &&
+      correspondingAction.action.kind !== "ThinkAction";
+
     return (
       <>
-        {correspondingAction && isActionEvent(correspondingAction) && (
+        {shouldShowThought && (
           <ThoughtEventMessage
             event={correspondingAction}
-            actions={actions}
             isFromPlanningAgent={isFromPlanningAgent}
           />
         )}
         <GenericEventMessageWrapper
           event={event}
           isLastMessage={isLastMessage}
+          correspondingAction={
+            correspondingAction && isActionEvent(correspondingAction)
+              ? correspondingAction
+              : undefined
+          }
         />
       </>
     );

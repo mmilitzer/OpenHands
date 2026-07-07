@@ -8,6 +8,7 @@ import {
   PlanningFileEditorObservation,
   TerminalObservation,
   BrowserObservation,
+  SwitchLLMObservation,
   BrowserNavigateAction,
 } from "./core";
 import { AgentErrorEvent } from "./core/events/observation-event";
@@ -19,7 +20,11 @@ import {
   ConversationStateUpdateEventFullState,
   ConversationStateUpdateEventStats,
   ConversationErrorEvent,
+  ServerErrorEvent,
 } from "./core/events/conversation-state-event";
+import { HookExecutionEvent } from "./core/events/hook-execution-event";
+import { ACPToolCallEvent } from "./core/events/acp-tool-call-event";
+import { StreamingDeltaEvent } from "./core/events/streaming-delta-event";
 import { SystemPromptEvent } from "./core/events/system-event";
 import type { OpenHandsParsedEvent } from "../core/index";
 
@@ -42,7 +47,8 @@ export function isBaseEvent(value: unknown): value is BaseEvent {
     typeof value.source === "string" &&
     (value.source === "agent" ||
       value.source === "user" ||
-      value.source === "environment")
+      value.source === "environment" ||
+      value.source === "hook")
   );
 }
 
@@ -184,12 +190,62 @@ export const isStatsConversationStateUpdateEvent = (
 ): event is ConversationStateUpdateEventStats => event.key === "stats";
 
 /**
+ * Type guard function to check if an observation event is a SwitchLLMObservation
+ * (emitted when the agent switches its LLM via the built-in switch_llm tool).
+ */
+export const isSwitchLLMObservationEvent = (
+  event: OpenHandsEvent,
+): event is ObservationEvent<SwitchLLMObservation> =>
+  isObservationEvent(event) &&
+  event.observation.kind === "SwitchLLMObservation";
+
+/**
  * Type guard function to check if an event is a conversation error event
  */
 export const isConversationErrorEvent = (
   event: OpenHandsEvent,
 ): event is ConversationErrorEvent =>
   "kind" in event && event.kind === "ConversationErrorEvent";
+
+/**
+ * Type guard function to check if an event is a server error event
+ */
+export const isServerErrorEvent = (
+  event: OpenHandsEvent,
+): event is ServerErrorEvent =>
+  "kind" in event && event.kind === "ServerErrorEvent";
+
+/**
+ * Type guard function to check if an event is a displayable error event
+ * (ConversationErrorEvent or ServerErrorEvent) - both should show as error banners
+ */
+export const isDisplayableErrorEvent = (event: OpenHandsEvent): boolean =>
+  isConversationErrorEvent(event) || isServerErrorEvent(event);
+
+/**
+ * Type guard function to check if an event is a hook execution event
+ */
+export const isHookExecutionEvent = (
+  event: OpenHandsEvent,
+): event is HookExecutionEvent =>
+  "kind" in event && event.kind === "HookExecutionEvent";
+
+/**
+ * Type guard function to check if an event is an ACP tool call event
+ */
+export const isACPToolCallEvent = (
+  event: OpenHandsEvent,
+): event is ACPToolCallEvent =>
+  "kind" in event && event.kind === "ACPToolCallEvent";
+
+/**
+ * Type guard function to check if an event is a streaming token delta event
+ * (a transient LLM token chunk emitted while the response streams).
+ */
+export const isStreamingDeltaEvent = (
+  event: OpenHandsEvent,
+): event is StreamingDeltaEvent =>
+  "kind" in event && event.kind === "StreamingDeltaEvent";
 
 // =============================================================================
 // TEMPORARY COMPATIBILITY TYPE GUARDS

@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { MobileHeader } from "./mobile-header";
 import { SettingsNavigation } from "./settings-navigation";
-import { SettingsNavItem } from "#/constants/settings-nav";
+import { SettingsNavRenderedItem } from "#/hooks/use-settings-nav-items";
 
 interface SettingsLayoutProps {
   children: React.ReactNode;
-  navigationItems: SettingsNavItem[];
+  navigationItems: SettingsNavRenderedItem[];
 }
 
 export function SettingsLayout({
@@ -18,14 +18,14 @@ export function SettingsLayout({
   const closeMobileMenu = () => setIsMobileMenuOpen(false);
 
   return (
-    <div className="flex flex-col h-full px-[14px] pt-8">
+    <div className="flex flex-col h-full min-h-0 px-[14px] pt-8">
       {/* Mobile header */}
       <MobileHeader
         isMobileMenuOpen={isMobileMenuOpen}
         onToggleMenu={toggleMobileMenu}
       />
       {/* Desktop layout with navigation and main content */}
-      <div className="flex flex-1 overflow-hidden gap-10">
+      <div className="flex flex-1 min-h-0 overflow-hidden gap-10">
         {/* Navigation */}
         <SettingsNavigation
           isMobileMenuOpen={isMobileMenuOpen}
@@ -33,7 +33,7 @@ export function SettingsLayout({
           navigationItems={navigationItems}
         />
         {/* Main content */}
-        <main className="flex-1 overflow-auto custom-scrollbar-always">
+        <main className="flex-1 min-w-0 min-h-0 overflow-auto custom-scrollbar-always">
           {children}
         </main>
       </div>

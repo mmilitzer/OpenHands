@@ -5,6 +5,8 @@ focusing on search functionality.
 """
 
 import tempfile
+import time
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -143,6 +145,29 @@ class TestFilesystemEventServiceSearchEvents:
         assert timestamps == sorted(timestamps, reverse=True)
 
     @pytest.mark.asyncio
+    async def test_iter_events_for_export_returns_all_events_in_timestamp_order(
+        self, service: FilesystemEventService
+    ):
+        """Test export iterator returns all events once in timestamp order."""
+        conversation_id = uuid4()
+        events = []
+
+        for _ in range(3):
+            event = create_token_event()
+            events.append(event)
+            await service.save_event(conversation_id, event)
+            time.sleep(0.01)
+
+        result = [
+            event async for event in service.iter_events_for_export(conversation_id)
+        ]
+
+        assert [event.id for event in result] == [event.id for event in events]
+        assert [event.timestamp for event in result] == sorted(
+            event.timestamp for event in result
+        )
+
+    @pytest.mark.asyncio
     async def test_search_events_returns_event_page(
         self, service: FilesystemEventService
     ):
@@ -160,6 +185,231 @@ class TestFilesystemEventServiceSearchEvents:
         assert hasattr(result, 'items')
         assert hasattr(result, 'next_page_id')
         assert len(result.items) == 3
+
+    @pytest.mark.asyncio
+    async def test_search_events_pagination_limits_results(
+        self, service: FilesystemEventService
+    ):
+        """Test that search_events respects the limit parameter for pagination."""
+        conversation_id = uuid4()
+        total_events = 10
+        page_limit = 3
+
+        # Create more events than the limit
+        for _ in range(total_events):
+            await service.save_event(conversation_id, create_token_event())
+
+        # First page should return only 'limit' events
+        result = await service.search_events(conversation_id, limit=page_limit)
+
+        assert len(result.items) == page_limit
+        assert result.next_page_id is not None
+
+    @pytest.mark.asyncio
+    async def test_search_events_pagination_iterates_all_events(
+        self, service: FilesystemEventService
+    ):
+        """Test that pagination correctly iterates through all events without duplicates.
+
+        This test verifies the fix for a bug where pagination was applied to 'paths'
+        instead of 'items', causing all events to be returned on every page.
+        """
+        conversation_id = uuid4()
+        total_events = 10
+        page_limit = 3
+
+        # Create events and track their IDs
+        created_event_ids = set()
+        for _ in range(total_events):
+            event = create_token_event()
+            created_event_ids.add(event.id)
+            await service.save_event(conversation_id, event)
+
+        # Iterate through all pages and collect event IDs
+        collected_event_ids = set()
+        page_id = None
+        page_count = 0
+
+        while True:
+            result = await service.search_events(
+                conversation_id, page_id=page_id, limit=page_limit
+            )
+            page_count += 1
+
+            for item in result.items:
+                # Verify no duplicates - this would fail with the old buggy code
+                assert item.id not in collected_event_ids, (
+                    f'Duplicate event {item.id} found on page {page_count}'
+                )
+                collected_event_ids.add(item.id)
+
+            if result.next_page_id is None:
+                break
+            page_id = result.next_page_id
+
+        # Verify we got all events exactly once
+        assert collected_event_ids == created_event_ids
+        assert len(collected_event_ids) == total_events
+
+        # With 10 events and limit of 3, we should have 4 pages (3+3+3+1)
+        expected_pages = (total_events + page_limit - 1) // page_limit
+        assert page_count == expected_pages
+
+    @pytest.mark.asyncio
+    async def test_search_events_pagination_with_filters(
+        self, service: FilesystemEventService
+    ):
+        """Test that pagination works correctly when combined with filters."""
+        conversation_id = uuid4()
+
+        # Create a mix of events
+        token_events = [create_token_event() for _ in range(5)]
+        pause_events = [create_pause_event() for _ in range(3)]
+
+        for event in token_events + pause_events:
+            await service.save_event(conversation_id, event)
+
+        # Search only for token events with pagination
+        page_limit = 2
+        collected_ids = set()
+        page_id = None
+
+        while True:
+            result = await service.search_events(
+                conversation_id,
+                kind__eq='TokenEvent',
+                page_id=page_id,
+                limit=page_limit,
+            )
+
+            for item in result.items:
+                assert item.kind == 'TokenEvent'
+                collected_ids.add(item.id)
+
+            if result.next_page_id is None:
+                break
+            page_id = result.next_page_id
+
+        # Should have found all 5 token events
+        assert len(collected_ids) == 5
+
+    @pytest.mark.asyncio
+    async def test_search_events_filter_by_timestamp_gte(
+        self, service: FilesystemEventService
+    ):
+        """Test that search_events filters events by timestamp__gte.
+
+        This verifies the fix for a bug where event.timestamp (str) was
+        compared directly against a datetime object, raising TypeError.
+        """
+        conversation_id = uuid4()
+
+        # Create events with a small delay so timestamps differ
+        early_event = create_token_event()
+        await service.save_event(conversation_id, early_event)
+        time.sleep(0.01)
+
+        cutoff = datetime.now()
+        time.sleep(0.01)
+
+        late_event = create_token_event()
+        await service.save_event(conversation_id, late_event)
+
+        result = await service.search_events(conversation_id, timestamp__gte=cutoff)
+
+        assert len(result.items) == 1
+        assert result.items[0].id == late_event.id
+
+    @pytest.mark.asyncio
+    async def test_search_events_filter_by_timestamp_lt(
+        self, service: FilesystemEventService
+    ):
+        """Test that search_events filters events by timestamp__lt.
+
+        This verifies the fix for a bug where event.timestamp (str) was
+        compared directly against a datetime object, raising TypeError.
+        """
+        conversation_id = uuid4()
+
+        early_event = create_token_event()
+        await service.save_event(conversation_id, early_event)
+        time.sleep(0.01)
+
+        cutoff = datetime.now()
+        time.sleep(0.01)
+
+        late_event = create_token_event()
+        await service.save_event(conversation_id, late_event)
+
+        result = await service.search_events(conversation_id, timestamp__lt=cutoff)
+
+        assert len(result.items) == 1
+        assert result.items[0].id == early_event.id
+
+    @pytest.mark.asyncio
+    async def test_search_events_filter_by_timestamp_range(
+        self, service: FilesystemEventService
+    ):
+        """Test that search_events filters events by a timestamp range."""
+        conversation_id = uuid4()
+
+        event1 = create_token_event()
+        await service.save_event(conversation_id, event1)
+        time.sleep(0.01)
+
+        range_start = datetime.now()
+        time.sleep(0.01)
+
+        event2 = create_token_event()
+        await service.save_event(conversation_id, event2)
+        time.sleep(0.01)
+
+        range_end = datetime.now()
+        time.sleep(0.01)
+
+        event3 = create_token_event()
+        await service.save_event(conversation_id, event3)
+
+        result = await service.search_events(
+            conversation_id,
+            timestamp__gte=range_start,
+            timestamp__lt=range_end,
+        )
+
+        assert len(result.items) == 1
+        assert result.items[0].id == event2.id
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_filter_with_desc_sort(
+        self, service: FilesystemEventService
+    ):
+        """Test timestamp filters combined with TIMESTAMP_DESC sort order."""
+        conversation_id = uuid4()
+
+        event1 = create_token_event()
+        await service.save_event(conversation_id, event1)
+        time.sleep(0.01)
+
+        cutoff = datetime.now()
+        time.sleep(0.01)
+
+        event2 = create_token_event()
+        await service.save_event(conversation_id, event2)
+        time.sleep(0.01)
+
+        event3 = create_token_event()
+        await service.save_event(conversation_id, event3)
+
+        result = await service.search_events(
+            conversation_id,
+            timestamp__gte=cutoff,
+            sort_order=EventSortOrder.TIMESTAMP_DESC,
+        )
+
+        assert len(result.items) == 2
+        # Descending: event3 before event2
+        assert result.items[0].id == event3.id
+        assert result.items[1].id == event2.id
 
 
 class TestFilesystemEventServiceIntegration:

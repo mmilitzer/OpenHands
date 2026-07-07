@@ -10,7 +10,7 @@ LABEL com.datadoghq.tags.env="${DD_ENV}"
 # Apply security updates to fix CVEs
 RUN apt-get update && \
     apt-get install -y curl && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y nodejs && \
     apt-get install -y jq gettext && \
     # Apply security updates for packages with available fixes
@@ -43,6 +43,12 @@ RUN cd /tmp/enterprise && \
 
 WORKDIR /app
 COPY --chown=openhands:openhands --chmod=770 enterprise .
+
+# Default the enterprise service-injector kinds in the image (overridable via env).
+# Keeping these next to the classes they name means the chart never references an
+# app-internal class path, so a chart/image version skew can't crashloop config load.
+ENV OH_LLM_MODEL_KIND=server.verified_models.litellm_proxy_model_router.LiteLLMProxyModelServiceInjector
+ENV OH_APP_CONVERSATION_INFO_KIND=server.utils.saas_app_conversation_info_injector.SaasAppConversationInfoServiceInjector
 
 USER openhands
 

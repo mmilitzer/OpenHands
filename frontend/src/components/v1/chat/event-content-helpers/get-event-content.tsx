@@ -1,13 +1,22 @@
 import { Trans } from "react-i18next";
 import React from "react";
-import { OpenHandsEvent, ObservationEvent } from "#/types/v1/core";
-import { isActionEvent, isObservationEvent } from "#/types/v1/type-guards";
+import { OpenHandsEvent, ObservationEvent, ActionEvent } from "#/types/v1/core";
+import {
+  isActionEvent,
+  isObservationEvent,
+  isACPToolCallEvent,
+} from "#/types/v1/type-guards";
 import { MonoComponent } from "../../../features/chat/mono-component";
 import { PathComponent } from "../../../features/chat/path-component";
 import { getActionContent } from "./get-action-content";
 import { getObservationContent } from "./get-observation-content";
+import { getACPToolCallContent } from "./get-acp-tool-call-content";
 import { TaskTrackingObservationContent } from "../task-tracking/task-tracking-observation-content";
-import { TaskTrackerObservation } from "#/types/v1/core/base/observation";
+import { SubagentObservationContent } from "../subagent/subagent-observation-content";
+import {
+  TaskTrackerObservation,
+  TaskObservation,
+} from "#/types/v1/core/base/observation";
 import { SkillReadyEvent, isSkillReadyEvent } from "./create-skill-ready-event";
 import i18n from "#/i18n";
 
@@ -37,11 +46,23 @@ const createTitleFromKey = (
   );
 };
 
+const getSummaryTitleForActionEvent = (
+  event: ActionEvent,
+): React.ReactNode | null => {
+  const summary = event.summary?.trim().replace(/\s+/g, " ") || "";
+  return summary || null;
+};
+
 // Action Event Processing
 const getActionEventTitle = (event: OpenHandsEvent): React.ReactNode => {
   // Early return if not an action event
   if (!isActionEvent(event)) {
     return "";
+  }
+
+  const summaryTitle = getSummaryTitleForActionEvent(event);
+  if (summaryTitle) {
+    return summaryTitle;
   }
 
   const actionType = event.action.kind;
@@ -84,6 +105,27 @@ const getActionEventTitle = (event: OpenHandsEvent): React.ReactNode => {
     case "TaskTrackerAction":
       actionKey = "ACTION_MESSAGE$TASK_TRACKING";
       break;
+    case "TaskAction":
+      actionKey = "ACTION_MESSAGE$TASK";
+      break;
+    case "GrepAction":
+      actionKey = "ACTION_MESSAGE$GREP";
+      actionValues = {
+        pattern:
+          "pattern" in event.action && event.action.pattern
+            ? trimText(String(event.action.pattern), 50)
+            : "",
+      };
+      break;
+    case "GlobAction":
+      actionKey = "ACTION_MESSAGE$GLOB";
+      actionValues = {
+        pattern:
+          "pattern" in event.action && event.action.pattern
+            ? trimText(String(event.action.pattern), 50)
+            : "",
+      };
+      break;
     case "BrowserNavigateAction":
     case "BrowserClickAction":
     case "BrowserTypeAction":
@@ -109,10 +151,20 @@ const getActionEventTitle = (event: OpenHandsEvent): React.ReactNode => {
 };
 
 // Observation Event Processing
-const getObservationEventTitle = (event: OpenHandsEvent): React.ReactNode => {
+const getObservationEventTitle = (
+  event: OpenHandsEvent,
+  correspondingAction?: ActionEvent,
+): React.ReactNode => {
   // Early return if not an observation event
   if (!isObservationEvent(event)) {
     return "";
+  }
+
+  if (correspondingAction) {
+    const summaryTitle = getSummaryTitleForActionEvent(correspondingAction);
+    if (summaryTitle) {
+      return summaryTitle;
+    }
   }
 
   const observationType = event.observation.kind;
@@ -159,8 +211,27 @@ const getObservationEventTitle = (event: OpenHandsEvent): React.ReactNode => {
       }
       break;
     }
+    case "TaskObservation":
+      observationKey = "OBSERVATION_MESSAGE$TASK";
+      break;
     case "ThinkObservation":
       observationKey = "OBSERVATION_MESSAGE$THINK";
+      break;
+    case "GlobObservation":
+      observationKey = "OBSERVATION_MESSAGE$GLOB";
+      observationValues = {
+        pattern: event.observation.pattern
+          ? trimText(event.observation.pattern, 50)
+          : "",
+      };
+      break;
+    case "GrepObservation":
+      observationKey = "OBSERVATION_MESSAGE$GREP";
+      observationValues = {
+        pattern: event.observation.pattern
+          ? trimText(event.observation.pattern, 50)
+          : "",
+      };
       break;
     default:
       // For unknown observations, use the type name
@@ -174,7 +245,10 @@ const getObservationEventTitle = (event: OpenHandsEvent): React.ReactNode => {
   return observationType;
 };
 
-export const getEventContent = (event: OpenHandsEvent | SkillReadyEvent) => {
+export const getEventContent = (
+  event: OpenHandsEvent | SkillReadyEvent,
+  correspondingAction?: ActionEvent,
+) => {
   let title: React.ReactNode = "";
   let details: string | React.ReactNode = "";
 
@@ -192,7 +266,7 @@ export const getEventContent = (event: OpenHandsEvent | SkillReadyEvent) => {
     title = getActionEventTitle(event);
     details = getActionContent(event);
   } else if (isObservationEvent(event)) {
-    title = getObservationEventTitle(event);
+    title = getObservationEventTitle(event, correspondingAction);
 
     // For TaskTrackerObservation, use React component instead of markdown
     if (event.observation.kind === "TaskTrackerObservation") {
@@ -201,13 +275,42 @@ export const getEventContent = (event: OpenHandsEvent | SkillReadyEvent) => {
           event={event as ObservationEvent<TaskTrackerObservation>}
         />
       );
+    } else if (event.observation.kind === "TaskObservation") {
+      // The Query comes from the paired action's prompt.
+      details = (
+        <SubagentObservationContent
+          event={event as ObservationEvent<TaskObservation>}
+          correspondingAction={correspondingAction}
+        />
+      );
     } else {
       details = getObservationContent(event);
     }
+  } else if (isACPToolCallEvent(event)) {
+    // ACP sub-agent tool calls reuse the same card shape as observations.
+    // ``event.title`` is the upstream sub-agent's own humanised label
+    // (Claude Code / Codex / Gemini CLI emit things like "Read tests" or
+    // "Edit foo.py"), so we render it verbatim — same pattern as the OH
+    // path's ``event.summary`` short-circuit. Wrapping it in a verb-prefix
+    // translation key (e.g. "Reading {{title}}") would double the verb.
+    title = event.title;
+    details = getACPToolCallContent(event);
+  } else if (
+    // Lenient fallback for action-like events that fail the strict isActionEvent() guard
+    // (e.g., missing tool_name or tool_call_id). Extract a title from the action kind
+    // so the UI shows something meaningful instead of "Unknown event".
+    event.source === "agent" &&
+    "action" in event &&
+    event.action !== null &&
+    typeof event.action === "object" &&
+    "kind" in event.action &&
+    typeof event.action.kind === "string"
+  ) {
+    title = String(event.action.kind).replace("Action", "").toUpperCase();
   }
 
   return {
     title: title || i18n.t("EVENT$UNKNOWN_EVENT"),
-    details: details || i18n.t("EVENT$UNKNOWN_EVENT"),
+    details,
   };
 };

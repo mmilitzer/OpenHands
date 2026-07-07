@@ -6,11 +6,11 @@ import { UserActions } from "./user-actions";
 import { OpenHandsLogoButton } from "#/components/shared/buttons/openhands-logo-button";
 import { NewProjectButton } from "#/components/shared/buttons/new-project-button";
 import { ConversationPanelButton } from "#/components/shared/buttons/conversation-panel-button";
+import { AutomationsButton } from "#/components/shared/buttons/automations-button";
 import { SettingsModal } from "#/components/shared/modals/settings/settings-modal";
 import { useSettings } from "#/hooks/query/use-settings";
 import { ConversationPanel } from "../conversation-panel/conversation-panel";
 import { ConversationPanelWrapper } from "../conversation-panel/conversation-panel-wrapper";
-import { useLogout } from "#/hooks/mutation/use-logout";
 import { useConfig } from "#/hooks/query/use-config";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { I18nKey } from "#/i18n/declaration";
@@ -27,7 +27,6 @@ export function Sidebar() {
     isError: settingsIsError,
     isFetching: isFetchingSettings,
   } = useSettings();
-  const { mutate: logout } = useLogout();
 
   const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
 
@@ -77,7 +76,7 @@ export function Sidebar() {
             <div className="flex items-center justify-center">
               <OpenHandsLogoButton />
             </div>
-            <div>
+            <div className="flex items-center justify-center">
               <NewProjectButton disabled={settings?.email_verified === false} />
             </div>
             <ConversationPanelButton
@@ -89,6 +88,11 @@ export function Sidebar() {
               }
               disabled={settings?.email_verified === false}
             />
+            {config?.feature_flags?.enable_automations && (
+              <AutomationsButton
+                disabled={settings?.email_verified === false}
+              />
+            )}
           </div>
 
           <div className="flex flex-row md:flex-col md:items-center gap-[26px]">
@@ -96,7 +100,6 @@ export function Sidebar() {
               user={
                 user.data ? { avatar_url: user.data.avatar_url } : undefined
               }
-              onLogout={logout}
               isLoading={user.isFetching}
             />
           </div>

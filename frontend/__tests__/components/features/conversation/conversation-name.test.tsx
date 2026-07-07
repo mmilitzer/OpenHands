@@ -72,7 +72,7 @@ vi.mock("react-i18next", async () => {
           CONVERSATION$SHOW_SKILLS: "Show Skills",
           BUTTON$DISPLAY_COST: "Display Cost",
           COMMON$CLOSE_CONVERSATION_STOP_RUNTIME:
-            "Close Conversation (Stop Runtime)",
+            "Close Conversation (Stop Sandbox)",
           COMMON$DELETE_CONVERSATION: "Delete Conversation",
           CONVERSATION$SHARE_PUBLICLY: "Share Publicly",
           CONVERSATION$LINK_COPIED: "Link copied to clipboard",
@@ -110,7 +110,7 @@ describe("ConversationName", () => {
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("should render the conversation name in view mode", () => {
@@ -296,6 +296,158 @@ describe("ConversationName", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("renders prettified model text and raw model in the tooltip", () => {
+    useActiveConversationMock.mockReturnValue({
+      data: {
+        conversation_id: "test-conversation-id",
+        title: "Test Conversation",
+        status: "RUNNING",
+        llm_model: "openai/gpt-4o",
+      } as Conversation,
+    });
+
+    renderConversationNameWithRouter();
+
+    const model = screen.getByTestId("conversation-name-llm-model");
+    expect(model).toBeInTheDocument();
+    expect(model).toHaveTextContent("GPT-4o");
+    expect(model).toHaveAttribute("title", "openai/gpt-4o");
+    expect(model.querySelector("svg")).toBeInTheDocument();
+  });
+
+  it("should render plain 'ACP' for ACP-agent conversations", () => {
+    useActiveConversationMock.mockReturnValue({
+      data: {
+        conversation_id: "test-conversation-id",
+        title: "Test Conversation",
+        status: "RUNNING",
+        agent_kind: "acp",
+      } as unknown as Conversation,
+    });
+
+    renderConversationNameWithRouter();
+
+    const model = screen.getByTestId("conversation-name-llm-model");
+    expect(model).toHaveTextContent("ACP");
+    expect(model).toHaveAttribute("title", "ACP");
+  });
+
+  it("should render the provider brand label when acp_server matches a known provider", () => {
+    useActiveConversationMock.mockReturnValue({
+      data: {
+        conversation_id: "test-conversation-id",
+        title: "Test Conversation",
+        status: "RUNNING",
+        agent_kind: "acp",
+        acp_server: "claude-code",
+      } as unknown as Conversation,
+    });
+    useConfigMock.mockReturnValue({
+      data: {
+        app_mode: "oss",
+        acp_providers: [
+          {
+            key: "claude-code",
+            display_name: "Claude Code",
+            default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+          },
+        ],
+      },
+    } as unknown as ReturnType<typeof useConfigMock>);
+
+    renderConversationNameWithRouter();
+
+    const model = screen.getByTestId("conversation-name-llm-model");
+    expect(model).toHaveTextContent("Claude Code");
+  });
+
+  it("renders the underlying model for an ACP conversation that exposes one", () => {
+    useActiveConversationMock.mockReturnValue({
+      data: {
+        conversation_id: "test-conversation-id",
+        title: "Test Conversation",
+        status: "RUNNING",
+        agent_kind: "acp",
+        acp_server: "claude-code",
+        llm_model: "anthropic/claude-opus-4-1",
+      } as unknown as Conversation,
+    });
+    useConfigMock.mockReturnValue({
+      data: {
+        app_mode: "oss",
+        acp_providers: [
+          {
+            key: "claude-code",
+            display_name: "Claude Code",
+            default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+            available_models: [
+              { id: "anthropic/claude-opus-4-1", label: "Claude Opus 4.1" },
+            ],
+          },
+        ],
+      },
+    } as unknown as ReturnType<typeof useConfigMock>);
+
+    renderConversationNameWithRouter();
+
+    const model = screen.getByTestId("conversation-name-llm-model");
+    expect(model).toHaveTextContent("Claude Opus 4.1");
+    expect(model).toHaveAttribute(
+      "title",
+      "Claude Code · anthropic/claude-opus-4-1",
+    );
+  });
+
+  it("falls back to the raw model id for an ACP conversation not in the registry", () => {
+    useActiveConversationMock.mockReturnValue({
+      data: {
+        conversation_id: "test-conversation-id",
+        title: "Test Conversation",
+        status: "RUNNING",
+        agent_kind: "acp",
+        acp_server: "claude-code",
+        llm_model: "anthropic/claude-opus-4-1",
+      } as unknown as Conversation,
+    });
+    useConfigMock.mockReturnValue({
+      data: {
+        app_mode: "oss",
+        acp_providers: [
+          {
+            key: "claude-code",
+            display_name: "Claude Code",
+            default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+          },
+        ],
+      },
+    } as unknown as ReturnType<typeof useConfigMock>);
+
+    renderConversationNameWithRouter();
+
+    const model = screen.getByTestId("conversation-name-llm-model");
+    expect(model).toHaveTextContent("anthropic/claude-opus-4-1");
+    expect(model).toHaveAttribute(
+      "title",
+      "Claude Code · anthropic/claude-opus-4-1",
+    );
+  });
+
+  it("should not render the llm model when not available", () => {
+    useActiveConversationMock.mockReturnValue({
+      data: {
+        conversation_id: "test-conversation-id",
+        title: "Test Conversation",
+        status: "RUNNING",
+      },
+    });
+
+    renderConversationNameWithRouter();
+
+    expect(
+      screen.queryByTestId("conversation-name-llm-model"),
+    ).not.toBeInTheDocument();
+  });
+
   it("should focus input when entering edit mode", async () => {
     const user = userEvent.setup();
     renderConversationNameWithRouter();
@@ -314,7 +466,7 @@ describe("ConversationNameContextMenu", () => {
   };
 
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("should render all menu options when all handlers are provided", () => {
@@ -325,8 +477,7 @@ describe("ConversationNameContextMenu", () => {
       onDisplayCost: vi.fn(),
       onShowAgentTools: vi.fn(),
       onShowSkills: vi.fn(),
-      onExportConversation: vi.fn(),
-      onDownloadViaVSCode: vi.fn(),
+      onDownloadConversation: vi.fn(),
     };
 
     renderWithProviders(
@@ -340,9 +491,8 @@ describe("ConversationNameContextMenu", () => {
     expect(screen.getByTestId("show-agent-tools-button")).toBeInTheDocument();
     expect(screen.getByTestId("show-skills-button")).toBeInTheDocument();
     expect(
-      screen.getByTestId("export-conversation-button"),
+      screen.getByTestId("download-trajectory-button"),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("download-vscode-button")).toBeInTheDocument();
   });
 
   it("should not render menu options when handlers are not provided", () => {
@@ -356,12 +506,6 @@ describe("ConversationNameContextMenu", () => {
       screen.queryByTestId("show-agent-tools-button"),
     ).not.toBeInTheDocument();
     expect(screen.queryByTestId("show-skills-button")).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("export-conversation-button"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("download-vscode-button"),
-    ).not.toBeInTheDocument();
   });
 
   it("should call rename handler when rename button is clicked", async () => {
@@ -457,59 +601,6 @@ describe("ConversationNameContextMenu", () => {
     expect(onShowSkills).toHaveBeenCalledTimes(1);
   });
 
-  it("should call export conversation handler when export conversation button is clicked", async () => {
-    const user = userEvent.setup();
-    const onExportConversation = vi.fn();
-
-    renderWithProviders(
-      <ConversationNameContextMenu
-        {...defaultProps}
-        onExportConversation={onExportConversation}
-      />,
-    );
-
-    const exportButton = screen.getByTestId("export-conversation-button");
-    await user.click(exportButton);
-
-    expect(onExportConversation).toHaveBeenCalledTimes(1);
-  });
-
-  it("should call download via VSCode handler when download via VSCode button is clicked", async () => {
-    const user = userEvent.setup();
-    const onDownloadViaVSCode = vi.fn();
-
-    renderWithProviders(
-      <ConversationNameContextMenu
-        {...defaultProps}
-        onDownloadViaVSCode={onDownloadViaVSCode}
-      />,
-    );
-
-    const downloadButton = screen.getByTestId("download-vscode-button");
-    await user.click(downloadButton);
-
-    expect(onDownloadViaVSCode).toHaveBeenCalledTimes(1);
-  });
-
-  it("should render separators between logical groups", () => {
-    const handlers = {
-      onRename: vi.fn(),
-      onShowAgentTools: vi.fn(),
-      onExportConversation: vi.fn(),
-      onDisplayCost: vi.fn(),
-      onStop: vi.fn(),
-    };
-
-    renderWithProviders(
-      <ConversationNameContextMenu {...defaultProps} {...handlers} />,
-    );
-
-    // Look for separator elements using test IDs
-    expect(screen.getByTestId("separator-tools")).toBeInTheDocument();
-    expect(screen.getByTestId("separator-export")).toBeInTheDocument();
-    expect(screen.getByTestId("separator-info-control")).toBeInTheDocument();
-  });
-
   it("should apply correct positioning class when position is top", () => {
     const handlers = {
       onRename: vi.fn(),
@@ -552,8 +643,7 @@ describe("ConversationNameContextMenu", () => {
       onDisplayCost: vi.fn(),
       onShowAgentTools: vi.fn(),
       onShowSkills: vi.fn(),
-      onExportConversation: vi.fn(),
-      onDownloadViaVSCode: vi.fn(),
+      onDownloadConversation: vi.fn(),
     };
 
     renderWithProviders(
@@ -565,7 +655,7 @@ describe("ConversationNameContextMenu", () => {
       "Delete Conversation",
     );
     expect(screen.getByTestId("stop-button")).toHaveTextContent(
-      "Close Conversation (Stop Runtime)",
+      "Close Conversation (Stop Sandbox)",
     );
     expect(screen.getByTestId("display-cost-button")).toHaveTextContent(
       "Display Cost",
@@ -576,11 +666,8 @@ describe("ConversationNameContextMenu", () => {
     expect(screen.getByTestId("show-skills-button")).toHaveTextContent(
       "Show Skills",
     );
-    expect(screen.getByTestId("export-conversation-button")).toHaveTextContent(
+    expect(screen.getByTestId("download-trajectory-button")).toHaveTextContent(
       "Export Conversation",
-    );
-    expect(screen.getByTestId("download-vscode-button")).toHaveTextContent(
-      "Download via VS Code",
     );
   });
 
@@ -642,7 +729,7 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("should display copy and open buttons when conversation is public", () => {
